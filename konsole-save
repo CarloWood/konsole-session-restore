@@ -16,13 +16,86 @@ flock -n 200 || exit 0
 
 # Fill associative arrays with wmctrl data.
 declare -A WIN_TITLES
-declare -A WIN_GEOM
+declare -A WIN_WORKSPACES
 
-while read -r winid workspace x y w h class host title; do
-  norm_id=$(printf "0x%08x" "$((winid))")
+normalize_window_id()
+{
+  # Accepts decimal or 0xHEX, returns 0xXXXXXXXX.
+  printf "0x%08x" "$(( $1 ))"
+}
+
+get_client_geometry_xywh()
+{
+  # Prints: "x y w h" for the client window geometry.
+  local wid="$1"
+  local geom w h x y
+
+  geom="$(xwininfo -id "$wid" 2>/dev/null | awk '/-geometry/ {print $2; exit}')"
+  [ -z "$geom" ] && return 1
+
+  # geom looks like: 200x200+1681+18 or 200x200-10+18
+  read -r w h x y < <(
+    printf '%s\n' "$geom" |
+      sed -E 's/^([0-9]+)x([0-9]+)([+-][0-9]+)([+-][0-9]+)$/\1 \2 \3 \4/'
+  )
+
+  if ! [[ "$w" =~ ^[0-9]+$ && "$h" =~ ^[0-9]+$ && "$x" =~ ^[+-][0-9]+$ && "$y" =~ ^[+-][0-9]+$ ]]; then
+    return 1
+  fi
+
+  # Strip leading +.
+  x=$((x))
+  y=$((y))
+
+  printf '%s %s %s %s\n' "$x" "$y" "$w" "$h"
+}
+
+get_frame_extents_lrtb()
+{
+  # Prints: "l r t b" (defaults to 0s if missing).
+  local wid="$1"
+  local out l r t b
+
+  out="$(xprop -id "$wid" _NET_FRAME_EXTENTS 2>/dev/null || true)"
+  if ! printf '%s\n' "$out" | grep -q '_NET_FRAME_EXTENTS'; then
+    printf '0 0 0 0\n'
+    return 0
+  fi
+
+  read -r l r t b < <(
+    printf '%s\n' "$out" |
+      sed -E 's/.*= *([0-9]+), *([0-9]+), *([0-9]+), *([0-9]+).*/\1 \2 \3 \4/'
+  )
+  if ! [[ "$l" =~ ^[0-9]+$ && "$r" =~ ^[0-9]+$ && "$t" =~ ^[0-9]+$ && "$b" =~ ^[0-9]+$ ]]; then
+    printf '0 0 0 0\n'
+    return 0
+  fi
+
+  printf '%s %s %s %s\n' "$l" "$r" "$t" "$b"
+}
+
+get_outer_geometry_xywh()
+{
+  # Prints: "x y w h" for the outer (frame-inclusive) geometry.
+  local wid="$1"
+  local cx cy cw ch l r t b
+
+  read -r cx cy cw ch < <(get_client_geometry_xywh "$wid") || return 1
+  read -r l r t b < <(get_frame_extents_lrtb "$wid") || return 1
+
+  # We need to store the size of the CLIENT window(?!?), because that is what wmctrl -e expects.
+  printf '%s %s %s %s\n' \
+    "$((cx - l))" \
+    "$((cy - t))" \
+    "$((cw))" \
+    "$((ch))"
+}
+
+while read -r winid workspace host class title; do
+  norm_id=$(normalize_window_id "$winid")
   WIN_TITLES["$norm_id"]="$title"
-  WIN_GEOM["$norm_id"]="$x $y $w $h $workspace"
-done < <(wmctrl -l -G -x | grep 'konsole.konsole')
+  WIN_WORKSPACES["$norm_id"]="$workspace"
+done < <(wmctrl -l -x | grep 'konsole.konsole')
 
 SERVICE=$(qdbus | awk '{$1=$1;print}' | grep org.kde.konsole | head -n 1)
 [ -z "$SERVICE" ] && exit 1
@@ -54,10 +127,10 @@ for win_path in $windows; do
   wid_dec=$(grep -z '^WINDOWID=' "/proc/$ref_pid/environ" | cut -z -d= -f2 | xargs -0 echo)
   [ -n "$WRITE_DEBUG_OUTPUT" ] && echo "$win_path : ref_pid=${ref_pid}, wid_dec=${wid_dec}"
   [ -z "$wid_dec" ] && continue
-  wid_hex=$(printf "0x%08x" "$wid_dec")
+  wid_hex=$(normalize_window_id "$wid_dec")
 
   # If the X11 window id is not present in wmctrl output, the window is not mapped/managed.
-  if [ -z "${WIN_GEOM[$wid_hex]+x}" ]; then
+  if [ -z "${WIN_TITLES[$wid_hex]+x}" ]; then
     [ -n "$WRITE_DEBUG_OUTPUT" ] && echo "$win_path : UNMAPPED window ${wid_hex}! Ignoring."
     continue
   fi
@@ -65,8 +138,14 @@ for win_path in $windows; do
 
   # Lookup data from our associative arrays.
   title="${WIN_TITLES[$wid_hex]}"
-  geom="${WIN_GEOM[$wid_hex]}"
-  read -r x y w h workspace <<< "$geom"
+  workspace="${WIN_WORKSPACES[$wid_hex]}"
+
+  # Obtain outer geometry (client + _NET_FRAME_EXTENTS).
+  if ! read -r x y w h < <(get_outer_geometry_xywh "$wid_hex"); then
+    [ -n "$WRITE_DEBUG_OUTPUT" ] && echo "$win_path : Failed to read geometry for ${wid_hex}! Ignoring."
+    continue
+  fi
+  [ -n "$WRITE_DEBUG_OUTPUT" ] && echo "$win_path : geom=${x},${y},${w},${h} workspace=${workspace}"
 
   # Build sessions CWD list.
   # We gather them into an array first to pass to jq safely.
