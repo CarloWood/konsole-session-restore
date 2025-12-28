@@ -93,5 +93,8 @@ for (( i=0; i<$NUM_WINDOWS; i++ )); do
   # Move window to the correct workspace.
   wmctrl -ir "$WINDOWID" -t ${WIN_WORKSPACES[$i]}
   # Fix the geometry.
-  wmctrl -i -r "$wid" -e "0,${WIN_GEOM_X[$i]},${WIN_GEOM_Y[$i]},${WIN_GEOM_W[$i]},${WIN_GEOM_H[$i]}"
+  echo wmctrl -ir "$WINDOWID" -e "0,${WIN_GEOM_X[$i]},${WIN_GEOM_Y[$i]},${WIN_GEOM_W[$i]},${WIN_GEOM_H[$i]}"
+  wmctrl -ir "$WINDOWID" -e "0,${WIN_GEOM_X[$i]},${WIN_GEOM_Y[$i]},${WIN_GEOM_W[$i]},${WIN_GEOM_H[$i]}"
+  # Clean up.
+  rm "$TABS_FILE-$i"
 done

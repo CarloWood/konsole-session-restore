@@ -2,9 +2,11 @@
 
 # konsole-save
 #
-# Write current session state of konsole windows to OUTPUT_FILE
+# Write current session state of konsole windows to OUTPUT_FILE.
+#
 # Set WRITE_DEBUG_OUTPUT to write debug output. For example,
 #   WRITE_DEBUG_OUTPUT=1 konsole-save
+#
 OUTPUT_FILE="$HOME/.konsole_state.json"
 
 # Obtain lock file.
