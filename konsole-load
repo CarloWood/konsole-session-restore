@@ -1,0 +1,97 @@
+#!/bin/bash
+
+JSON_FILE="$HOME/.konsole_state.json"
+[ ! -f "$JSON_FILE" ] && { echo "JSON file not found"; exit 1; }
+
+TABS_FILE="/tmp/restore-tabs.txt"
+
+export PATH="/usr/bin"
+
+# Initialize associative arrays.
+declare -A WIN_TITLES
+declare -A WIN_GEOM_X
+declare -A WIN_GEOM_Y
+declare -A WIN_GEOM_W
+declare -A WIN_GEOM_H
+declare -A WIN_WORKSPACES
+declare -A WIN_CWDS                     # Stores paths separated by newlines.
+declare -A WIN_PROFILES
+
+# Use jq to build the associative array assignments.
+eval "$(
+  jq -r '
+    to_entries[]
+    | select(.value != null)
+    | "WIN_TITLES[\"\(.key)\"]=\(.value.title // "" | @sh); " +
+      "WIN_GEOM_X[\"\(.key)\"]=\("\(.value.x)" | @sh); " +
+      "WIN_GEOM_Y[\"\(.key)\"]=\("\(.value.y)" | @sh); " +
+      "WIN_GEOM_W[\"\(.key)\"]=\("\(.value.w)" | @sh); " +
+      "WIN_GEOM_H[\"\(.key)\"]=\("\(.value.h)" | @sh); " +
+      "WIN_WORKSPACES[\"\(.key)\"]=\(.value.workspace // 0 | @sh); " +
+      "WIN_CWDS[\"\(.key)\"]=\((.value.sessions // [] | map(.cwd // "") | join("\n")) | @sh); " +
+      "WIN_PROFILES[\"\(.key)\"]=\((.value.sessions // [] | map(.profile // "Profile 1") | join("\n")) | @sh); "
+  ' "$JSON_FILE"
+)"
+
+NUM_WINDOWS=${#WIN_TITLES[@]}
+
+list_konsole_wids()
+{
+  # Output hex window IDs (like 0x03e00007), one per line.
+  # The exact WM_CLASS string varies a bit; this matches typical Konsole.
+  wmctrl -lx |
+    awk '$3 ~ /(^konsole\.konsole$)|(^konsole\.Konsole$)|(^org\.kde\.konsole$)/ { print $1 }'
+}
+
+wait_new_konsole_wid()
+{
+  # Wait for exactly one new Konsole window compared to the snapshot given on stdin.
+  local tmp_before tmp_after
+  local new_wids
+
+  tmp_before=$(mktemp)
+  tmp_after=$(mktemp)
+
+  cat >"$tmp_before"
+
+  for _ in {1..200}; do
+    list_konsole_wids | sort -u >"$tmp_after"
+
+    # Set difference: after \ before.
+    new_wids=$(comm -13 "$tmp_before" "$tmp_after")
+
+    # If exactly one new window: return it.
+    if [ "$(printf '%s\n' "$new_wids" | sed '/^$/d' | wc -l)" -eq 1 ]; then
+      printf '%s\n' "$new_wids"
+      rm -f "$tmp_before" "$tmp_after"
+      return 0
+    fi
+
+    sleep 0.05
+  done
+
+  rm -f "$tmp_before" "$tmp_after"
+  return 1
+}
+
+for (( i=0; i<$NUM_WINDOWS; i++ )); do
+  echo "Processing window $i"
+  echo -n > "$TABS_FILE-$i"
+  readarray -t TAB_CWDS <<< "${WIN_CWDS[$i]}"
+  readarray -t TAB_PROFILES <<< "${WIN_PROFILES[$i]}"
+  NUM_TABS=${#TAB_CWDS[@]}
+  for (( t=0; t<$NUM_TABS; t++ )); do
+    echo "workdir: ${TAB_CWDS[$t]} ;; profile: ${TAB_PROFILES[$t]}" >> "$TABS_FILE-$i"
+  done
+  before=$(list_konsole_wids | sort -u)
+  setsid konsole --tabs-from-file "$TABS_FILE-$i" -e true </dev/null >/dev/null 2>&1 &
+  WINDOWID=$(printf '%s\n' "$before" | wait_new_konsole_wid) || {
+    echo "Failed to detect new Konsole window." >&2
+    exit 1
+  }
+  sleep 0.1
+  # Move window to the correct workspace.
+  wmctrl -ir "$WINDOWID" -t ${WIN_WORKSPACES[$i]}
+  # Fix the geometry.
+  wmctrl -i -r "$wid" -e "0,${WIN_GEOM_X[$i]},${WIN_GEOM_Y[$i]},${WIN_GEOM_W[$i]},${WIN_GEOM_H[$i]}"
+done

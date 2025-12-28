@@ -1,0 +1,126 @@
+#!/usr/bin/bash
+
+# konsole-save
+#
+# Write current session state of konsole windows to OUTPUT_FILE
+# Set WRITE_DEBUG_OUTPUT to write debug output. For example,
+#   WRITE_DEBUG_OUTPUT=1 konsole-save
+OUTPUT_FILE="$HOME/.konsole_state.json"
+
+# Obtain lock file.
+LOCKFILE="/tmp/konsole-save.lock"
+exec 200>"$LOCKFILE"
+flock -n 200 || exit 0
+
+# Fill associative arrays with wmctrl data.
+declare -A WIN_TITLES
+declare -A WIN_GEOM
+
+while read -r winid workspace x y w h class host title; do
+  norm_id=$(printf "0x%08x" "$((winid))")
+  WIN_TITLES["$norm_id"]="$title"
+  WIN_GEOM["$norm_id"]="$x $y $w $h $workspace"
+done < <(wmctrl -l -G -x | grep 'konsole.konsole')
+
+SERVICE=$(qdbus | awk '{$1=$1;print}' | grep org.kde.konsole | head -n 1)
+[ -z "$SERVICE" ] && exit 1
+
+[ -n "$WRITE_DEBUG_OUTPUT" ] && echo "SERVICE=\"${SERVICE}\""
+
+echo "[" > "$OUTPUT_FILE"
+
+windows=$(qdbus "$SERVICE" | grep -E '^/Windows/[0-9]+$')
+if [ -n "$WRITE_DEBUG_OUTPUT" ]; then
+  echo -n "windows=\""
+  echo -n ${windows} | xargs echo -n
+  echo "\""
+fi
+
+first_win=true
+for win_path in $windows; do
+  visual_order=$(qdbus "$SERVICE" "$win_path" org.kde.konsole.Window.sessionList)
+  ref_session=$(echo "$visual_order" | head -n 1 | awk '{print $1}')
+  if [ -n "$WRITE_DEBUG_OUTPUT" ]; then
+    echo
+    echo -n "$win_path : visual_order=\""
+    echo -n ${visual_order} | xargs echo -n
+    echo "\", ref_session=${ref_session}"
+  fi
+  [ -z "$ref_session" ] && continue
+
+  ref_pid=$(qdbus "$SERVICE" "/Sessions/$ref_session" org.kde.konsole.Session.processId)
+  wid_dec=$(grep -z '^WINDOWID=' "/proc/$ref_pid/environ" | cut -z -d= -f2 | xargs -0 echo)
+  [ -n "$WRITE_DEBUG_OUTPUT" ] && echo "$win_path : ref_pid=${ref_pid}, wid_dec=${wid_dec}"
+  [ -z "$wid_dec" ] && continue
+  wid_hex=$(printf "0x%08x" "$wid_dec")
+
+  # If the X11 window id is not present in wmctrl output, the window is not mapped/managed.
+  if [ -z "${WIN_GEOM[$wid_hex]+x}" ]; then
+    [ -n "$WRITE_DEBUG_OUTPUT" ] && echo "$win_path : UNMAPPED window ${wid_hex}! Ignoring."
+    continue
+  fi
+  [ -n "$WRITE_DEBUG_OUTPUT" ] && echo "$win_path : wid_hex=${wid_hex}"
+
+  # Lookup data from our associative arrays.
+  title="${WIN_TITLES[$wid_hex]}"
+  geom="${WIN_GEOM[$wid_hex]}"
+  read -r x y w h workspace <<< "$geom"
+
+  # Build sessions CWD list.
+  # We gather them into an array first to pass to jq safely.
+  session_cwds=()
+  session_profiles=()
+  for s_id in $visual_order; do
+    # Obtain current working directory.
+    s_pid=$(qdbus "$SERVICE" "/Sessions/$s_id" org.kde.konsole.Session.processId)
+    s_cwd=$(readlink -f "/proc/$s_pid/cwd" 2>/dev/null)
+    session_cwds+=("$s_cwd")
+
+    # Obtain profile name.
+    s_profile=$(qdbus "$SERVICE" "/Sessions/$s_id" org.kde.konsole.Session.profile)
+    session_profiles+=("$s_profile")
+  done
+  if [ -n "$WRITE_DEBUG_OUTPUT" ]; then
+    echo -n "$win_path : session_cwds=[ "
+    printf '"%s" ' "${session_cwds[@]}"
+    echo "]"
+    echo -n "$win_path : session_profiles=[ "
+    printf '"%s" ' "${session_profiles[@]}"
+    echo "]"
+  fi
+
+  [ "$first_win" = false ] && echo "," >> "$OUTPUT_FILE"
+  
+  # Use jq to write a properly escaped JSON object.
+  # This handles quotes in titles and paths automatically.
+  cwds_json=$(printf '%s\n' "${session_cwds[@]}" | jq -R . | jq -s .)
+  [ -n "$WRITE_DEBUG_OUTPUT" ] && echo "$win_path : cwds_json='$cwds_json'"
+  profiles_json=$(printf '%s\n' "${session_profiles[@]}" | jq -R . | jq -s .)
+  [ -n "$WRITE_DEBUG_OUTPUT" ] && echo "$win_path : profiles_json='$profiles_json'"
+
+  [ -n "$WRITE_DEBUG_OUTPUT" ] && echo "$win_path : appending to \"$OUTPUT_FILE\"."
+  jq -n \
+    --arg wid "$wid_hex" \
+    --arg title "$title" \
+    --arg x "$x" --arg y "$y" --arg w "$w" --arg h "$h" \
+    --arg ws "$workspace" \
+    --argjson cwds "$cwds_json" \
+    --argjson profiles "$profiles_json" \
+    '{
+      window_id: $wid,
+      title: $title,
+      x: ($x|tonumber),
+      y: ($y|tonumber),
+      w: ($w|tonumber),
+      h: ($h|tonumber),
+      workspace: ($ws|tonumber),
+      sessions: [
+        range(0; ($cwds|length)) as $i
+        | { cwd: $cwds[$i], profile: $profiles[$i] }
+      ]
+    }' >> "$OUTPUT_FILE"
+
+  first_win=false
+done
+
+echo "]" >> "$OUTPUT_FILE"
