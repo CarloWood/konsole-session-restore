@@ -1,0 +1,13 @@
+[Unit]
+Description=konsole session store/restore service
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+ExecPreStart=%h/.local/libexec/konsole-session/konsole-load
+ExecStart=%h/.local/libexec/konsole-session/start-konsole-save-service
+
+[Install]
+# graphical-session.target is started/stopped from ~/.xinitrc while Xorg is still running
+# and DBUS_SESSION_BUS_ADDRESS, DISPLAY and XAUTHORITY are valid (to this user service).
+WantedBy=graphical-session.target

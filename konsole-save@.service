@@ -1,0 +1,16 @@
+[Unit]
+Description=Save Konsole state when Konsole PID %i stops
+# Run this before konsole is stopped.
+PartOf=app-org.kde.konsole-%i.scope
+After=app-org.kde.konsole-%i.scope
+# Run this is fluxbox is terminated (before Xorg is killed).
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=%h/.local/libexec/konsole-session/konsole-save
+TimeoutStopSec=10s
+KillMode=none

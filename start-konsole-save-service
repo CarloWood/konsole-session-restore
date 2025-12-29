@@ -1,0 +1,74 @@
+#!/usr/bin/bash
+
+KONSOLE_BUS_NAME="org.kde.konsole"
+
+function start_konsole()
+{
+  # 1. Attempt to launch.
+  setsid konsole </dev/null >/dev/null 2>&1 &
+
+  # 2. Poll for the PID (max 20 attempts, 0.1s apart = 2 seconds).
+  # Wait until there is exactly one process running in case there was
+  # a race and something else already started konsole in the meantime.
+  for i in {1..20}; do
+    local count=$(pgrep --exact --count konsole)
+    if [[ $count = 1 ]]; then
+      # A millisecond ago there was only one process. We want that one.
+      local pid=$(pgrep --exact --oldest konsole)
+      if [ -n "$pid" ]; then
+        echo "$pid"
+        return 0
+      fi
+    fi
+    sleep 0.1
+  done
+
+  # 3. If we get here, it failed to start.
+  return 1
+}
+
+function wait_for_konsole_scope()
+{
+  local pid="$1"
+  local scope="app-org.kde.konsole-${pid}.scope"
+  local i
+
+  # Poll for the systemd scope to be activated (max 50 attempts, 0.1s apart = 5 seconds).
+  for i in {1..50}; do
+    if systemctl --user is-active "$scope" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.1
+  done
+
+  return 1
+}
+
+#------------------------------------------------------------------------------
+# Get PID of running konsole (if any).
+
+owner=$(qdbus org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.GetNameOwner $KONSOLE_BUS_NAME)
+
+if [[ $? -ne 0 ]]; then
+  echo "start-konsole-save-service: warning: no konsole found running yet. You should run konsole-load before running start-konsole-save-service."
+  # Start first instance of konsole.
+  konsole_pid=$(start_konsole)
+  echo "New konsole process started with PID $konsole_pid."
+else
+  konsole_pid=$(qdbus org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.GetConnectionUnixProcessID "$owner")
+  echo "Using already running konsole with PID $konsole_pid."
+fi
+
+#------------------------------------------------------------------------------
+# Wait for app-org.kde.konsole-${konsole_pid}.scope to be active.
+#
+
+if ! wait_for_konsole_scope "$konsole_pid"; then
+  echo "Timed out waiting for Konsole scope" >&2
+  exit 1
+fi
+
+#------------------------------------------------------------------------------
+# Start service that will write the konsole status upon shutdown.
+
+systemctl --user start konsole-save@${konsole_pid}.service
