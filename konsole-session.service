@@ -1,5 +1,7 @@
 [Unit]
 Description=konsole session store/restore service
+ConditionEnvironment=DISPLAY
+ConditionEnvironment=DBUS_SESSION_BUS_ADDRESS
 
 [Service]
 Type=oneshot
