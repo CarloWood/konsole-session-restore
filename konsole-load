@@ -217,8 +217,9 @@ wait_new_konsole_wid()
 
   cat >"$tmp_before"
 
-  for _ in {1..200}; do
+  for _ in {1..50}; do
     if ! list_konsole_wids | sort -u >"$tmp_after"; then
+      echo 'wait_new_konsole_wid: list_konsole_wids failed.' >&2
       sleep 0.05
       continue
     fi
@@ -228,14 +229,18 @@ wait_new_konsole_wid()
 
     # If exactly one new window: return it.
     if [ "$(printf '%s\n' "$new_wids" | sed '/^$/d' | wc -l)" -eq 1 ]; then
+      echo "wait_new_konsole_wid: success; new_wids=\"$new_wids\"." >&2
       printf '%s\n' "$new_wids"
       rm -f "$tmp_before" "$tmp_after"
       return 0
+    else
+      echo "wait_new_konsole_wid: ignoring because new_wids=\"$new_wids\"." >&2
     fi
 
-    sleep 0.05
+    sleep 0.2
   done
 
+  echo "wait_new_konsole_wid: timed out. new_wids=\"$new_wids\", tmp_before=\"$(cat $tmp_before)\", tmp_after=\"$(cat $tmp_after)\"." >&2
   rm -f "$tmp_before" "$tmp_after"
   return 1
 }
@@ -302,7 +307,7 @@ for (( i=0; i<$NUM_WINDOWS; i++ )); do
   done
   before=$(list_konsole_wids | sort -u)
   echo -n "(window ids before: $(echo "$before" | xargs echo)) : "
-  setsid konsole --tabs-from-file "$TABS_FILE-$i" -e sleep 0.2 </dev/null >/dev/null 2>&1 &
+  setsid konsole --tabs-from-file "$TABS_FILE-$i" -e true </dev/null >/dev/null 2>&1 &
   WINDOWID=$(printf '%s\n' "$before" | wait_new_konsole_wid) || {
     echo "Failed to detect new Konsole window." >&2
     exit 1
