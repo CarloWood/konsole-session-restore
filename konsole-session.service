@@ -6,7 +6,7 @@ ConditionEnvironment=DBUS_SESSION_BUS_ADDRESS
 [Service]
 Type=oneshot
 RemainAfterExit=no
-ExecPreStart=%h/.local/libexec/konsole-session/konsole-load
+ExecStartPre=%h/.local/libexec/konsole-session/konsole-load
 ExecStart=%h/.local/libexec/konsole-session/start-konsole-save-service
 
 [Install]

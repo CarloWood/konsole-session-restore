@@ -1,17 +1,12 @@
 #!/bin/bash
 
-# Define XDG paths with defaults.
-XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
-
 # Target directories.
 LIBEXEC_DIR="$HOME/.local/libexec/konsole-session"
-UNIT_DIR="$XDG_CONFIG_HOME/systemd/user"
 
 echo "--- Installing Konsole Session Restore ---"
 
 # 1. Create directories
 mkdir -p "$LIBEXEC_DIR"
-mkdir -p "$UNIT_DIR"
 
 # 2. Install Executables (to libexec)
 echo "Installing scripts to $LIBEXEC_DIR..."
@@ -19,8 +14,16 @@ cp konsole-load konsole-save start-konsole-save-service "$LIBEXEC_DIR/"
 chmod +x "$LIBEXEC_DIR"/*
 
 # 3. Install Systemd Units (to user config)
-echo "Installing systemd units to $UNIT_DIR..."
-cp graphical-session.target konsole-save@.service konsole-session.service "$UNIT_DIR/"
+echo -n "Linking systemd units..."
+for unit in graphical-session.target konsole-session.service konsole-save@.service; do
+  echo -n " $unit"
+  systemctl --user link "$PWD/$unit"
+done
+echo
+
+# 4. Enable konsole-session.service or it won't be started when graphical-session.target comes up.
+echo "Enabling konsole-session.service..."
+systemctl --user enable konsole-session.service
 
 # 4. Reload systemd daemon
 echo "Reloading systemd user daemon..."

@@ -13,4 +13,3 @@ RemainAfterExit=yes
 ExecStart=/bin/true
 ExecStop=%h/.local/libexec/konsole-session/konsole-save
 TimeoutStopSec=10s
-KillMode=none

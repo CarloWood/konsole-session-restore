@@ -1,7 +1,7 @@
 #!/bin/bash
 
 JSON_FILE="$HOME/.konsole_state.json"
-[ ! -f "$JSON_FILE" ] && { echo "JSON file not found"; exit 1; }
+[ ! -f "$JSON_FILE" ] && { echo "JSON file not found"; exit 0; }
 
 TABS_FILE="/tmp/restore-tabs.txt"
 
