@@ -34,12 +34,14 @@ fluxbox_exited() {
   systemctl --user stop graphical-session.target
 }
 
+# Stop graphical-session.target - in case it is still running - upon exit.
 trap fluxbox_exited EXIT HUP INT TERM
 
+# Start the Window Manager.
 startfluxbox &
 fb_pid=$!
 wait "$fb_pid"
 
-# Stop graphical-session.target - in case it is still running.
+# The Window Manager did exit.
 exit 0
 ```
