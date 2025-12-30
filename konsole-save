@@ -28,24 +28,18 @@ get_client_geometry_xywh()
 {
   # Prints: "x y w h" for the client window geometry.
   local wid="$1"
-  local geom w h x y
+  local info corner geom w h x y
 
-  geom="$(xwininfo -id "$wid" 2>/dev/null | awk '/-geometry/ {print $2; exit}')"
-  [ -z "$geom" ] && return 1
+  info="$(xwininfo -id "$wid" 2>/dev/null)" || return 1
 
-  # geom looks like: 200x200+1681+18 or 200x200-10+18
-  read -r w h x y < <(
-    printf '%s\n' "$geom" |
-      sed -E 's/^([0-9]+)x([0-9]+)([+-][0-9]+)([+-][0-9]+)$/\1 \2 \3 \4/'
-  )
+  x="$(printf '%s\n' "$info" | awk -F: '/Absolute upper-left X:/ {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit}')"
+  y="$(printf '%s\n' "$info" | awk -F: '/Absolute upper-left Y:/ {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit}')"
+  w="$(printf '%s\n' "$info" | awk '/^[[:space:]]*Width:/ {print $2; exit}')"
+  h="$(printf '%s\n' "$info" | awk '/^[[:space:]]*Height:/ {print $2; exit}')"
 
-  if ! [[ "$w" =~ ^[0-9]+$ && "$h" =~ ^[0-9]+$ && "$x" =~ ^[+-][0-9]+$ && "$y" =~ ^[+-][0-9]+$ ]]; then
+  if ! [[ "$w" =~ ^[0-9]+$ && "$h" =~ ^[0-9]+$ && "$x" =~ ^[0-9]+$ && "$y" =~ ^[0-9]+$ ]]; then
     return 1
   fi
-
-  # Strip leading +.
-  x=$((x))
-  y=$((y))
 
   printf '%s %s %s %s\n' "$x" "$y" "$w" "$h"
 }
@@ -62,6 +56,7 @@ get_frame_extents_lrtb()
     return 0
   fi
 
+  local IFS=$' \t\n'
   read -r l r t b < <(
     printf '%s\n' "$out" |
       sed -E 's/.*= *([0-9]+), *([0-9]+), *([0-9]+), *([0-9]+).*/\1 \2 \3 \4/'
