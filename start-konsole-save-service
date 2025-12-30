@@ -71,4 +71,4 @@ fi
 #------------------------------------------------------------------------------
 # Start service that will write the konsole status upon shutdown.
 
-systemctl --user start konsole-save@${konsole_pid}.service
+systemctl --user start --no-block konsole-save@${konsole_pid}.service
