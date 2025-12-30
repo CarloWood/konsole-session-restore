@@ -16,7 +16,7 @@ Configure konsole to use single-process mode:
 
 Start the service `graphical-session.target` after Xorg is already running.
 Optionally, stop the service if your window manager can hard-exit (while Xorg
-and konsole still run).
+and konsole still run). Rebooting normally should already take of that.
 
 For example, if you are using `fluxbox`, put the following at the end of your `.xinitrc`:
 
