@@ -23,6 +23,7 @@ systemctl --user start graphical-session.target
 # When fluxbox terminates, also stop graphical-session.target.
 # At this point Xorg and konsole should both still be running.
 fluxbox_exited() {
+  # This causes konsole-save to be run and doesn't return until that is finished.
   systemctl --user stop graphical-session.target
 }
 
@@ -35,5 +36,3 @@ wait "$fb_pid"
 # Stop graphical-session.target - in case it is still running.
 exit 0
 ```
-
-

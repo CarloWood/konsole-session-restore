@@ -3,6 +3,8 @@
 JSON_FILE="$HOME/.konsole_state.json"
 [ ! -f "$JSON_FILE" ] && { echo "JSON file not found"; exit 0; }
 
+set -o pipefail
+
 TABS_FILE="/tmp/restore-tabs.txt"
 
 export PATH="/usr/bin"
@@ -35,12 +37,47 @@ eval "$(
 
 NUM_WINDOWS=${#WIN_TITLES[@]}
 
+normalize_window_id()
+{
+  # Accepts decimal or 0xHEX, returns 0xXXXXXXXX.
+  printf "0x%08x" "$(( $1 ))"
+}
+
+wait_wmctrl_ready()
+{
+  # wmctrl requires an EWMH-capable window manager to set _NET_CLIENT_LIST on the root window.
+  # When konsole-load is started early (e.g. from .xinitrc), wmctrl can fail until the WM is up.
+  local tries="${WAIT_WMCTRL_TRIES:-600}"   # 600 * 0.05s = 30s
+  local sleep_s="${WAIT_WMCTRL_SLEEP:-0.05}"
+  local attempt=0
+
+  while (( attempt < tries )); do
+    wmctrl -lx >/dev/null 2>&1 && return 0
+    sleep "$sleep_s"
+    ((attempt++))
+  done
+
+  return 1
+}
+
 list_konsole_wids()
 {
   # Output hex window IDs (like 0x03e00007), one per line.
-  # The exact WM_CLASS string varies a bit; this matches typical Konsole.
-  wmctrl -lx |
-    awk '$3 ~ /(^konsole\.konsole$)|(^konsole\.Konsole$)|(^org\.kde\.konsole$)/ { print $1 }'
+  # Do not depend on a running WM: xdotool queries X11 directly.
+  local ids id
+  ids="$(
+    {
+      xdotool search --class 'konsole|Konsole|org\\.kde\\.konsole' 2>/dev/null || true
+      xdotool search --classname 'konsole|Konsole|org\\.kde\\.konsole' 2>/dev/null || true
+    } | sed '/^$/d' | sort -n -u
+  )"
+
+  [ -z "$ids" ] && return 0
+
+  while read -r id; do
+    [ -z "$id" ] && continue
+    printf '%s\n' "$(normalize_window_id "$id")"
+  done <<<"$ids"
 }
 
 wait_new_konsole_wid()
@@ -55,7 +92,10 @@ wait_new_konsole_wid()
   cat >"$tmp_before"
 
   for _ in {1..200}; do
-    list_konsole_wids | sort -u >"$tmp_after"
+    if ! list_konsole_wids | sort -u >"$tmp_after"; then
+      sleep 0.05
+      continue
+    fi
 
     # Set difference: after \ before.
     new_wids=$(comm -13 "$tmp_before" "$tmp_after")
@@ -74,8 +114,34 @@ wait_new_konsole_wid()
   return 1
 }
 
+apply_window_properties()
+{
+  local i wid
+
+  wait_wmctrl_ready || {
+    echo "wmctrl is not ready (no EWMH window manager yet?)" >&2
+    return 1
+  }
+
+  for (( i=0; i<$NUM_WINDOWS; i++ )); do
+    wid="${WINDOWIDS[$i]}"
+    [ -z "$wid" ] && continue
+
+    # Activate the window in case it isn't (see https://bugs.kde.org/show_bug.cgi?id=487896).
+    wmctrl -ia "$wid"
+
+    # Move window to the correct workspace.
+    wmctrl -ir "$wid" -t "${WIN_WORKSPACES[$i]}" || true
+
+    # Fix the geometry.
+    wmctrl -ir "$wid" -e "0,${WIN_GEOM_X[$i]},${WIN_GEOM_Y[$i]},${WIN_GEOM_W[$i]},${WIN_GEOM_H[$i]}" || true
+  done
+}
+
+declare -a WINDOWIDS
+
 for (( i=0; i<$NUM_WINDOWS; i++ )); do
-  echo "Processing window $i"
+  echo -n "Processing window $i "
   echo -n > "$TABS_FILE-$i"
   readarray -t TAB_CWDS <<< "${WIN_CWDS[$i]}"
   readarray -t TAB_PROFILES <<< "${WIN_PROFILES[$i]}"
@@ -84,16 +150,21 @@ for (( i=0; i<$NUM_WINDOWS; i++ )); do
     echo "workdir: ${TAB_CWDS[$t]} ;; profile: ${TAB_PROFILES[$t]}" >> "$TABS_FILE-$i"
   done
   before=$(list_konsole_wids | sort -u)
-  setsid konsole --tabs-from-file "$TABS_FILE-$i" -e true </dev/null >/dev/null 2>&1 &
+  echo -n "(window ids before: $(echo "$before" | xargs echo)) : "
+  setsid konsole --tabs-from-file "$TABS_FILE-$i" -e sleep 0.2 </dev/null >/dev/null 2>&1 &
   WINDOWID=$(printf '%s\n' "$before" | wait_new_konsole_wid) || {
     echo "Failed to detect new Konsole window." >&2
     exit 1
   }
-  sleep 0.1
-  # Move window to the correct workspace.
-  wmctrl -ir "$WINDOWID" -t ${WIN_WORKSPACES[$i]}
-  # Fix the geometry.
-  wmctrl -ir "$WINDOWID" -e "0,${WIN_GEOM_X[$i]},${WIN_GEOM_Y[$i]},${WIN_GEOM_W[$i]},${WIN_GEOM_H[$i]}"
+  WINDOWIDS[$i]="$WINDOWID"
+  echo "$WINDOWID"
   # Clean up.
   rm "$TABS_FILE-$i"
 done
+
+# If a WM is already up, apply immediately. Otherwise, defer until it is.
+if wmctrl -lx >/dev/null 2>&1; then
+  apply_window_properties || exit 1
+else
+  apply_window_properties >/dev/null 2>&1 &
+fi
