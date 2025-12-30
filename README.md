@@ -7,11 +7,11 @@ Run `./install.sh`.
 Configure konsole to use single-process mode.
 `Settings -> Configure Konsole... -> General -> Run all Konsole windows in a single process.
 
-Start and the service `graphical-session.target` after Xorg is already running.
+Start the service `graphical-session.target` after Xorg is already running.
 Optionally, stop the service if your window manager can hard-exit (while Xorg
 and konsole still run).
 
-For example, of you are using `fluxbox`, put the following at the end of your `.xinitrc`:
+For example, if you are using `fluxbox`, put the following at the end of your `.xinitrc`:
 
 ```
 # Make sure the user manager sees the right GUI env.
