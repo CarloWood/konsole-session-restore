@@ -1,15 +1,15 @@
-# konsole-session-restore
+## konsole-session-restore
 
 A small user service that automatically saves your current Konsole session (windows/tabs and working directory per tab)
 when rebooting and/or terminating the window manager and restores it the next time you start your graphical session.
 
 State is written to `~/.konsole_state.json`.
 
-# Installation
+## Installation
 
 Run `./install.sh`.
 
-# Enabling the service
+## Enabling the service
 
 Configure konsole to use single-process mode.
 `Settings -> Configure Konsole... -> General -> Run all Konsole windows in a single process.
