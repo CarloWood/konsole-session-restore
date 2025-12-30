@@ -8,6 +8,80 @@ set -o pipefail
 TABS_FILE="/tmp/restore-tabs.txt"
 
 export PATH="/usr/bin"
+SELF_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+
+is_truthy()
+{
+  case "${1:-}" in
+    1|true|True|TRUE|yes|Yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+running_under_systemd()
+{
+  # systemd sets INVOCATION_ID for unit processes.
+  [ -n "${INVOCATION_ID:-}" ]
+}
+
+# Set KONSOLE_LOAD_DEBUG=1 to avoid silencing deferred output.
+KONSOLE_LOAD_DEBUG="${KONSOLE_LOAD_DEBUG:-0}"
+
+write_windowids_file()
+{
+  local out i
+  out="$(mktemp /tmp/konsole-load-windowids.XXXXXX)"
+  {
+    printf 'declare -a WINDOWIDS\n'
+    for (( i=0; i<$NUM_WINDOWS; i++ )); do
+      [ -n "${WINDOWIDS[$i]:-}" ] || continue
+      printf 'WINDOWIDS[%d]=%q\n' "$i" "${WINDOWIDS[$i]}"
+    done
+  } >"$out"
+  printf '%s\n' "$out"
+}
+
+run_deferred_apply()
+{
+  local windowids_file="$1"
+
+  if running_under_systemd && command -v systemd-run >/dev/null 2>&1; then
+    # Start a transient unit so the deferred work does not live in this oneshot
+    # unit's control group (otherwise systemd may kill it / warn about leftovers).
+    local unit="konsole-load-apply-$$-$(date +%s)"
+    local -a cmd=(
+      systemd-run
+      --user
+      --quiet
+      --collect
+      --unit="$unit"
+      # Pass GUI env through explicitly; systemd-run units do not automatically
+      # inherit this from the calling process in a reliable way.
+#      --setenv=DISPLAY="${DISPLAY:-}"
+#      --setenv=XAUTHORITY="${XAUTHORITY:-}"
+#      --setenv=DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}"
+      --setenv=KONSOLE_LOAD_MODE=apply
+      --setenv=KONSOLE_LOAD_WINDOWIDS_FILE="$windowids_file"
+    )
+
+    if is_truthy "$KONSOLE_LOAD_DEBUG"; then
+      cmd+=(--setenv=KONSOLE_LOAD_DEBUG=1)
+    else
+      # Keep default behavior quiet; still keep stderr in the journal in case of errors.
+      cmd+=(--property=StandardOutput=null --property=StandardError=journal)
+    fi
+
+    "${cmd[@]}" "$SELF_PATH"
+    return $?
+  fi
+
+  # Fallback for non-systemd execution: keep old behavior (best-effort).
+  if is_truthy "$KONSOLE_LOAD_DEBUG"; then
+    KONSOLE_LOAD_MODE=apply KONSOLE_LOAD_WINDOWIDS_FILE="$windowids_file" "$SELF_PATH" &
+  else
+    KONSOLE_LOAD_MODE=apply KONSOLE_LOAD_WINDOWIDS_FILE="$windowids_file" "$SELF_PATH" >/dev/null 2>&1 &
+  fi
+}
 
 # Initialize associative arrays.
 declare -A WIN_TITLES
@@ -57,6 +131,58 @@ wait_wmctrl_ready()
     ((attempt++))
   done
 
+  return 1
+}
+
+desktop_size()
+{
+  # Usage: desktop_size <desktop_index>
+  # Output: "<width> <height>" (empty if unknown)
+  local desktop="$1"
+
+  wmctrl -d 2>/dev/null | awk -v d="$desktop" '
+    $1 == d {
+      for (i = 1; i <= NF; i++) {
+        if ($i == "DG:") {
+          split($(i+1), a, "x")
+          print a[1], a[2]
+          exit
+        }
+      }
+    }
+  '
+}
+
+wait_desktop_size()
+{
+  # Usage: wait_desktop_size <desktop_index> <x> <y>
+  # Wait up to 10 seconds until x < width and y < height for that desktop (wmctrl -d DG:).
+  local desktop="$1"
+  local x="$2"
+  local y="$3"
+
+  local deadline=$((SECONDS + 10))
+  local width height
+
+  while (( SECONDS < deadline )); do
+    read -r width height <<<"$(desktop_size "$desktop")"
+
+    if [[ "$width" =~ ^[0-9]+$ && "$height" =~ ^[0-9]+$ ]]; then
+      if (( x < width && y < height )); then
+        echo "wait_desktop_size: workspace $desktop has size ${width}x${height}; requested position: $x $y."
+        return 0
+      fi
+    fi
+
+    sleep 0.2
+  done
+
+  read -r width height <<<"$(desktop_size "$desktop")"
+  if [[ "$width" =~ ^[0-9]+$ && "$height" =~ ^[0-9]+$ ]]; then
+    echo "Timed out waiting for desktop $desktop to reach full size (need x<$width y<$height; have x=$x y=$y)." >&2
+  else
+    echo "Timed out waiting for desktop $desktop geometry to become available (have x=$x y=$y)." >&2
+  fi
   return 1
 }
 
@@ -127,18 +253,43 @@ apply_window_properties()
     wid="${WINDOWIDS[$i]}"
     [ -z "$wid" ] && continue
 
+    echo "apply_window_properties: processing $wid"
+
+    # Wait for the size of the root window to be large enough (in case more than one monitor is being used).
+    wait_desktop_size "${WIN_WORKSPACES[$i]}" "${WIN_GEOM_X[$i]}" "${WIN_GEOM_Y[$i]}" || return 1
+
     # Activate the window in case it isn't (see https://bugs.kde.org/show_bug.cgi?id=502075).
+    echo "Calling 'wmctrl -ia \"$wid\"'."
     wmctrl -ia "$wid"
 
     # Move window to the correct workspace.
+    echo "Calling 'wmctrl -ir \"$wid\" -t \"${WIN_WORKSPACES[$i]}\"'."
     wmctrl -ir "$wid" -t "${WIN_WORKSPACES[$i]}" || true
 
     # Fix the geometry.
+    echo "Calling 'wmctrl -ir \"$wid\" -e \"0,${WIN_GEOM_X[$i]},${WIN_GEOM_Y[$i]},${WIN_GEOM_W[$i]},${WIN_GEOM_H[$i]}\""
     wmctrl -ir "$wid" -e "0,${WIN_GEOM_X[$i]},${WIN_GEOM_Y[$i]},${WIN_GEOM_W[$i]},${WIN_GEOM_H[$i]}" || true
+
+    echo "Resulting geometry 1:"
+    wmctrl -lGx | grep "^$wid" || true
+
   done
 }
 
 declare -a WINDOWIDS
+
+if [ "${KONSOLE_LOAD_MODE:-}" = "apply" ]; then
+  if [ -z "${KONSOLE_LOAD_WINDOWIDS_FILE:-}" ] || [ ! -f "${KONSOLE_LOAD_WINDOWIDS_FILE:-}" ]; then
+    echo "KONSOLE_LOAD_MODE=apply requires KONSOLE_LOAD_WINDOWIDS_FILE to exist." >&2
+    exit 1
+  fi
+
+  # shellcheck source=/dev/null
+  source "$KONSOLE_LOAD_WINDOWIDS_FILE"
+  rm -f "$KONSOLE_LOAD_WINDOWIDS_FILE" || true
+  apply_window_properties || exit 1
+  exit 0
+fi
 
 for (( i=0; i<$NUM_WINDOWS; i++ )); do
   echo -n "Processing window $i "
@@ -166,5 +317,6 @@ done
 if wmctrl -lx >/dev/null 2>&1; then
   apply_window_properties || exit 1
 else
-  apply_window_properties >/dev/null 2>&1 &
+  windowids_file="$(write_windowids_file)"
+  run_deferred_apply "$windowids_file" || exit 1
 fi
