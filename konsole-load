@@ -127,7 +127,7 @@ apply_window_properties()
     wid="${WINDOWIDS[$i]}"
     [ -z "$wid" ] && continue
 
-    # Activate the window in case it isn't (see https://bugs.kde.org/show_bug.cgi?id=487896).
+    # Activate the window in case it isn't (see https://bugs.kde.org/show_bug.cgi?id=502075).
     wmctrl -ia "$wid"
 
     # Move window to the correct workspace.
