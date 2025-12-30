@@ -11,8 +11,8 @@ Run `./install.sh`.
 
 ## Enabling the service
 
-Configure konsole to use single-process mode.
-`Settings -> Configure Konsole... -> General -> Run all Konsole windows in a single process.
+Configure konsole to use single-process mode:
+`Settings -> Configure Konsole... -> General -> Run all Konsole windows in a single process`.
 
 Start the service `graphical-session.target` after Xorg is already running.
 Optionally, stop the service if your window manager can hard-exit (while Xorg
