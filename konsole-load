@@ -296,21 +296,36 @@ fi
 
 for (( i=0; i<$NUM_WINDOWS; i++ )); do
   echo -n "Processing window $i "
+
   readarray -t TAB_CWDS <<< "${WIN_CWDS[$i]}"
   readarray -t TAB_PROFILES <<< "${WIN_PROFILES[$i]}"
+
   NUM_TABS=${#TAB_CWDS[@]}
-  if (( NUM_TABS > 0 )); then
-    before=$(list_konsole_wids | sort -u)
-    echo -n "(window ids before: $(echo "$before" | xargs echo)) : "
-    setsid konsole --profile "${TAB_PROFILES[0]}" --workdir "${TAB_CWDS[0]}" </dev/null >/dev/null 2>&1 &
-    WINDOWID=$(printf '%s\n' "$before" | wait_new_konsole_wid) || {
-      echo "Failed to detect new Konsole window." >&2
-      exit 1
-    }
-    for (( t=1; t<$NUM_TABS; t++ )); do
-      konsole --new-tab --profile "${TAB_PROFILES[$t]}" --workdir "${TAB_CWDS[$t]}"
-    done
+
+  # Sanity check.
+  if (( ${#WIN_CWDS[@]} == 0 )); then
+    echo "No tabs for window $i." >&2
+    exit 1
   fi
+  if (( ${#WIN_PROFILES[@]} < NUM_TABS )); then
+    echo "Not enough profiles for window $i." >&2
+    exit 1
+  fi
+
+  before=$(list_konsole_wids | sort -u)
+  echo -n "(window ids before: $(echo "$before" | xargs echo)) : "
+
+  setsid konsole --profile "${TAB_PROFILES[0]:-Profile 1}" --workdir "${TAB_CWDS[0]}" </dev/null >/dev/null 2>&1 &
+
+  WINDOWID=$(printf '%s\n' "$before" | wait_new_konsole_wid) || {
+    echo "Failed to detect new Konsole window." >&2
+    exit 1
+  }
+
+  for (( t=1; t<$NUM_TABS; t++ )); do
+    konsole --new-tab --profile "${TAB_PROFILES[$t]}" --workdir "${TAB_CWDS[$t]}"
+  done
+
   WINDOWIDS[$i]="$WINDOWID"
   echo "$WINDOWID"
 done
