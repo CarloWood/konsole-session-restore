@@ -5,8 +5,6 @@ JSON_FILE="$HOME/.konsole_state.json"
 
 set -o pipefail
 
-TABS_FILE="/tmp/restore-tabs.txt"
-
 export PATH="/usr/bin"
 SELF_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 
@@ -298,24 +296,23 @@ fi
 
 for (( i=0; i<$NUM_WINDOWS; i++ )); do
   echo -n "Processing window $i "
-  echo -n > "$TABS_FILE-$i"
   readarray -t TAB_CWDS <<< "${WIN_CWDS[$i]}"
   readarray -t TAB_PROFILES <<< "${WIN_PROFILES[$i]}"
   NUM_TABS=${#TAB_CWDS[@]}
-  for (( t=0; t<$NUM_TABS; t++ )); do
-    echo "workdir: ${TAB_CWDS[$t]} ;; profile: ${TAB_PROFILES[$t]}" >> "$TABS_FILE-$i"
-  done
-  before=$(list_konsole_wids | sort -u)
-  echo -n "(window ids before: $(echo "$before" | xargs echo)) : "
-  setsid konsole --tabs-from-file "$TABS_FILE-$i" -e true </dev/null >/dev/null 2>&1 &
-  WINDOWID=$(printf '%s\n' "$before" | wait_new_konsole_wid) || {
-    echo "Failed to detect new Konsole window." >&2
-    exit 1
-  }
+  if (( NUM_TABS > 0 )); then
+    before=$(list_konsole_wids | sort -u)
+    echo -n "(window ids before: $(echo "$before" | xargs echo)) : "
+    setsid konsole --profile "${TAB_PROFILES[0]}" --workdir "${TAB_CWDS[0]}" </dev/null >/dev/null 2>&1 &
+    WINDOWID=$(printf '%s\n' "$before" | wait_new_konsole_wid) || {
+      echo "Failed to detect new Konsole window." >&2
+      exit 1
+    }
+    for (( t=1; t<$NUM_TABS; t++ )); do
+      konsole --new-tab --profile "${TAB_PROFILES[$t]}" --workdir "${TAB_CWDS[$t]}"
+    done
+  fi
   WINDOWIDS[$i]="$WINDOWID"
   echo "$WINDOWID"
-  # Clean up.
-  rm "$TABS_FILE-$i"
 done
 
 # If a WM is already up, apply immediately. Otherwise, defer until it is.
