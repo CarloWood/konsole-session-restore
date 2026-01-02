@@ -617,8 +617,11 @@ apply_window_properties()
     debug "Calling 'wmctrl -ir \"$wid\" -e \"0,${WIN_GEOM_X[$i]},${WIN_GEOM_Y[$i]},${WIN_GEOM_W[$i]},${WIN_GEOM_H[$i]}\""
     wmctrl -ir "$wid" -e "0,${WIN_GEOM_X[$i]},${WIN_GEOM_Y[$i]},${WIN_GEOM_W[$i]},${WIN_GEOM_H[$i]}" || true
 
-    debug "Resulting geometry 1:"
-    wmctrl -lGx | grep "^$wid" || true
+    if [ -n "$KONSOLE_LOAD_DEBUG" ]; then
+      debug "Resulting geometry of /Windows/$i (wmctrl -lGx | grep \"^$wid\"):"
+      geomstr="$(wmctrl -lGx | grep "^$wid" || true)"
+      printf '%s\n' "$geomstr" >&2
+    fi
 
   done
 }
