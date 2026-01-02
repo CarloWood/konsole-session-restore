@@ -27,6 +27,20 @@ function start_konsole()
   return 1
 }
 
+function write_session_env_file()
+{
+  local state_dir="$HOME/.local/state/konsole-session"
+  local env_file="$state_dir/env"
+
+  mkdir -p "$state_dir" || return 1
+
+  {
+    [ -n "${DISPLAY:-}" ] && echo "DISPLAY=$DISPLAY"
+    [ -n "${XAUTHORITY:-}" ] && echo "XAUTHORITY=$XAUTHORITY"
+    [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] && echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"
+  } >"$env_file"
+}
+
 function wait_for_konsole_scope()
 {
   local pid="$1"
@@ -56,7 +70,7 @@ if [[ $? -ne 0 ]]; then
   echo "New konsole process started with PID $konsole_pid."
 else
   konsole_pid=$(qdbus org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.GetConnectionUnixProcessID "$owner")
-  echo "Using already running konsole with PID $konsole_pid."
+  echo "Using konsole with PID $konsole_pid."
 fi
 
 #------------------------------------------------------------------------------
@@ -71,4 +85,5 @@ fi
 #------------------------------------------------------------------------------
 # Start service that will write the konsole status upon shutdown.
 
+write_session_env_file || echo "Failed to write env file for konsole-save." >&2
 systemctl --user start --no-block konsole-save@${konsole_pid}.service

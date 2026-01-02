@@ -122,14 +122,26 @@ get_outer_geometry_xywh()
     "$((ch))"
 }
 
+wmctrl_out="$(wmctrl -l -x 2>&1)"; wmctrl_ec=$?
+if [ $wmctrl_ec -ne 0 ]; then
+  debug "wmctrl -l -x failed (exit=$wmctrl_ec): $wmctrl_out"
+  wmctrl_out=""
+fi
+
 while read -r winid workspace host class title; do
   norm_id=$(normalize_window_id "$winid")
   WIN_TITLES["$norm_id"]="$title"
   WIN_WORKSPACES["$norm_id"]="$workspace"
-done < <(wmctrl -l -x | grep 'konsole.konsole')
+done < <(printf '%s\n' "$wmctrl_out" | grep 'konsole.konsole')
 
-SERVICE=$(qdbus | awk '{$1=$1;print}' | grep org.kde.konsole | head -n 1)
-[ -z "$SERVICE" ] && exit 1
+qdbus_list="$(qdbus 2>&1)"; qdbus_ec=$?
+if [ $qdbus_ec -ne 0 ]; then
+  debug "qdbus failed (exit=$qdbus_ec): $qdbus_list"
+  exit 1
+fi
+
+SERVICE="$(printf '%s\n' "$qdbus_list" | awk '{$1=$1;print}' | grep org.kde.konsole | head -n 1)"
+[ -z "$SERVICE" ] && { debug "No org.kde.konsole DBus service found."; exit 1; }
 
 debug "SERVICE=\"${SERVICE}\""
 
