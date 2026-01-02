@@ -50,6 +50,16 @@ exit 0
 
 ## Debugging
 
+- Enable verbose store logging:
+```
+systemctl --user edit konsole-save@.service
+```
+and add:
+```
+[Service]
+Environment=KONSOLE_SAVE_DEBUG=1
+```
+
 - Enable verbose deferred restore logging:
 ```
 systemctl --user edit konsole-session.service

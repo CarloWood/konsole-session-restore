@@ -2,17 +2,49 @@
 
 # konsole-save
 #
-# Write current session state of konsole windows to OUTPUT_FILE.
+# Write current session state of konsole windows to JSON_FILE.
 #
-# Set WRITE_DEBUG_OUTPUT to write debug output. For example,
-#   WRITE_DEBUG_OUTPUT=1 konsole-save
+# Set KONSOLE_SAVE_DEBUG to write debug output. For example,
+#   KONSOLE_SAVE_DEBUG=1 konsole-save
 #
-OUTPUT_FILE="$HOME/.konsole_state.json"
+JSON_FILE="$HOME/.konsole_state.json"
+
+set -o pipefail
+
+export PATH="/usr/bin"
 
 # Obtain lock file.
 LOCKFILE="/tmp/konsole-save.lock"
 exec 200>"$LOCKFILE"
 flock -n 200 || exit 0
+
+# Return success if the value looks truthy (1/true/yes/on).
+is_truthy()
+{
+  case "${1:-}" in
+    1|true|True|TRUE|yes|Yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Canonicalize KONSOLE_SAVE_DEBUG.
+if is_truthy "${KONSOLE_SAVE_DEBUG:-0}"; then
+  KONSOLE_SAVE_DEBUG=1
+else
+  KONSOLE_SAVE_DEBUG=
+fi
+
+# Emit a debug message to stderr when KONSOLE_SAVE_DEBUG is enabled.
+debug()
+{
+  [ -n "$KONSOLE_SAVE_DEBUG" ] && echo "DEBUG: $*" >&2
+}
+
+# Emit an error message to stderr.
+print_error()
+{
+  echo "ERROR: $*" >&2
+}
 
 # Fill associative arrays with wmctrl data.
 declare -A WIN_TITLES
@@ -99,41 +131,41 @@ done < <(wmctrl -l -x | grep 'konsole.konsole')
 SERVICE=$(qdbus | awk '{$1=$1;print}' | grep org.kde.konsole | head -n 1)
 [ -z "$SERVICE" ] && exit 1
 
-[ -n "$WRITE_DEBUG_OUTPUT" ] && echo "SERVICE=\"${SERVICE}\""
+debug "SERVICE=\"${SERVICE}\""
 
-echo "[" > "$OUTPUT_FILE"
+echo "[" > "$JSON_FILE"
 
 windows=$(qdbus "$SERVICE" | grep -E '^/Windows/[0-9]+$')
-if [ -n "$WRITE_DEBUG_OUTPUT" ]; then
-  echo -n "windows=\""
-  echo -n ${windows} | xargs echo -n
-  echo "\""
+if [ -n "$KONSOLE_SAVE_DEBUG" ]; then
+  echo -n "windows=\"" >&2
+  echo -n ${windows} | xargs echo -n >&2
+  echo "\"" >&2
 fi
 
 first_win=true
 for win_path in $windows; do
   visual_order=$(qdbus "$SERVICE" "$win_path" org.kde.konsole.Window.sessionList)
   ref_session=$(echo "$visual_order" | head -n 1 | awk '{print $1}')
-  if [ -n "$WRITE_DEBUG_OUTPUT" ]; then
-    echo
-    echo -n "$win_path : visual_order=\""
-    echo -n ${visual_order} | xargs echo -n
-    echo "\", ref_session=${ref_session}"
+  if [ -n "$KONSOLE_SAVE_DEBUG" ]; then
+    echo >&2
+    echo -n "$win_path : visual_order=\"" >&2
+    echo -n ${visual_order} | xargs echo -n >&2
+    echo "\", ref_session=${ref_session}" >&2
   fi
   [ -z "$ref_session" ] && continue
 
   ref_pid=$(qdbus "$SERVICE" "/Sessions/$ref_session" org.kde.konsole.Session.processId)
   wid_dec=$(grep -z '^WINDOWID=' "/proc/$ref_pid/environ" | cut -z -d= -f2 | xargs -0 echo)
-  [ -n "$WRITE_DEBUG_OUTPUT" ] && echo "$win_path : ref_pid=${ref_pid}, wid_dec=${wid_dec}"
+  debug "$win_path : ref_pid=${ref_pid}, wid_dec=${wid_dec}"
   [ -z "$wid_dec" ] && continue
   wid_hex=$(normalize_window_id "$wid_dec")
 
   # If the X11 window id is not present in wmctrl output, the window is not mapped/managed.
   if [ -z "${WIN_TITLES[$wid_hex]+x}" ]; then
-    [ -n "$WRITE_DEBUG_OUTPUT" ] && echo "$win_path : UNMAPPED window ${wid_hex}! Ignoring."
+    debug "$win_path : UNMAPPED window ${wid_hex}! Ignoring."
     continue
   fi
-  [ -n "$WRITE_DEBUG_OUTPUT" ] && echo "$win_path : wid_hex=${wid_hex}"
+  debug "$win_path : wid_hex=${wid_hex}"
 
   # Lookup data from our associative arrays.
   title="${WIN_TITLES[$wid_hex]}"
@@ -141,10 +173,10 @@ for win_path in $windows; do
 
   # Obtain outer geometry (client + _NET_FRAME_EXTENTS).
   if ! read -r x y w h < <(get_outer_geometry_xywh "$wid_hex"); then
-    [ -n "$WRITE_DEBUG_OUTPUT" ] && echo "$win_path : Failed to read geometry for ${wid_hex}! Ignoring."
+    debug "$win_path : Failed to read geometry for ${wid_hex}! Ignoring."
     continue
   fi
-  [ -n "$WRITE_DEBUG_OUTPUT" ] && echo "$win_path : geom=${x},${y},${w},${h} workspace=${workspace}"
+  debug "$win_path : geom=${x},${y},${w},${h} workspace=${workspace}"
 
   # Build sessions CWD list.
   # We gather them into an array first to pass to jq safely.
@@ -160,25 +192,25 @@ for win_path in $windows; do
     s_profile=$(qdbus "$SERVICE" "/Sessions/$s_id" org.kde.konsole.Session.profile)
     session_profiles+=("$s_profile")
   done
-  if [ -n "$WRITE_DEBUG_OUTPUT" ]; then
-    echo -n "$win_path : session_cwds=[ "
-    printf '"%s" ' "${session_cwds[@]}"
-    echo "]"
-    echo -n "$win_path : session_profiles=[ "
-    printf '"%s" ' "${session_profiles[@]}"
-    echo "]"
+  if [ -n "$KONSOLE_SAVE_DEBUG" ]; then
+    echo -n "$win_path : session_cwds=[ " >&2
+    printf '"%s" ' "${session_cwds[@]}" >&2
+    echo "]" >&2
+    echo -n "$win_path : session_profiles=[ " >&2
+    printf '"%s" ' "${session_profiles[@]}" >&2
+    echo "]" >&2
   fi
 
-  [ "$first_win" = false ] && echo "," >> "$OUTPUT_FILE"
+  [ "$first_win" = false ] && echo "," >> "$JSON_FILE"
   
   # Use jq to write a properly escaped JSON object.
   # This handles quotes in titles and paths automatically.
   cwds_json=$(printf '%s\n' "${session_cwds[@]}" | jq -R . | jq -s .)
-  [ -n "$WRITE_DEBUG_OUTPUT" ] && echo "$win_path : cwds_json='$cwds_json'"
+  debug "$win_path : cwds_json='$cwds_json'"
   profiles_json=$(printf '%s\n' "${session_profiles[@]}" | jq -R . | jq -s .)
-  [ -n "$WRITE_DEBUG_OUTPUT" ] && echo "$win_path : profiles_json='$profiles_json'"
+  debug "$win_path : profiles_json='$profiles_json'"
 
-  [ -n "$WRITE_DEBUG_OUTPUT" ] && echo "$win_path : appending to \"$OUTPUT_FILE\"."
+  debug "$win_path : appending to \"$JSON_FILE\"."
   jq -n \
     --arg wid "$wid_hex" \
     --arg title "$title" \
@@ -198,9 +230,9 @@ for win_path in $windows; do
         range(0; ($cwds|length)) as $i
         | { cwd: $cwds[$i], profile: $profiles[$i] }
       ]
-    }' >> "$OUTPUT_FILE"
+    }' >> "$JSON_FILE"
 
   first_win=false
 done
 
-echo "]" >> "$OUTPUT_FILE"
+echo "]" >> "$JSON_FILE"
