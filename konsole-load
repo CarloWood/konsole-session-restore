@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# Set KONSOLE_LOAD_DEBUG=1 to avoid silencing deferred output.
+
 JSON_FILE="$HOME/.konsole_state.json"
 [ ! -f "$JSON_FILE" ] && { echo "JSON file not found"; exit 0; }
 
@@ -8,6 +10,7 @@ set -o pipefail
 export PATH="/usr/bin"
 SELF_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 
+# Return success if the value looks truthy (1/true/yes/on).
 is_truthy()
 {
   case "${1:-}" in
@@ -16,32 +19,72 @@ is_truthy()
   esac
 }
 
+# Canonicalize KONSOLE_LOAD_DEBUG.
+if is_truthy "${KONSOLE_LOAD_DEBUG:-0}"; then
+  KONSOLE_LOAD_DEBUG=1
+else
+  KONSOLE_LOAD_DEBUG=
+fi
+
+# Emit a debug message to stderr when KONSOLE_LOAD_DEBUG is enabled.
+debug()
+{
+  [ -n "$KONSOLE_LOAD_DEBUG" ] && echo "DEBUG: $*" >&2
+}
+
+# Emit an error message to stderr.
+err()
+{
+  echo "ERROR: $*" >&2
+}
+
+# Dump the available DBus interface for troubleshooting (once per path+iface).
+debug_dump_qdbus_iface()
+{
+  [ -n "$KONSOLE_LOAD_DEBUG" ] || return 0
+
+  local path="$1"
+  local iface="$2"
+  local key
+
+  key="DUMPED_${path//[^a-zA-Z0-9]/_}_${iface//[^a-zA-Z0-9]/_}"
+
+  # Dump at most once per (path, iface) to avoid log spam.
+  if [ -n "${!key:-}" ]; then
+    return 0
+  fi
+  printf -v "$key" "1"
+
+  debug "qdbus iface dump: service=$KONSOLE_DBUS_SERVICE path=$path iface=$iface"
+  qdbus "$KONSOLE_DBUS_SERVICE" "$path" "$iface" 2>&1 | sed 's/^/DEBUG:   /' >&2 || true
+}
+
+# Return success if we're executing as part of a systemd unit.
 running_under_systemd()
 {
   # systemd sets INVOCATION_ID for unit processes.
   [ -n "${INVOCATION_ID:-}" ]
 }
 
-# Set KONSOLE_LOAD_DEBUG=1 to avoid silencing deferred output.
-KONSOLE_LOAD_DEBUG="${KONSOLE_LOAD_DEBUG:-0}"
-
-write_windowids_file()
+# Persist discovered Konsole /Windows/N paths to a temp file for deferred apply.
+write_window_paths_file()
 {
   local out i
-  out="$(mktemp /tmp/konsole-load-windowids.XXXXXX)"
+  out="$(mktemp /tmp/konsole-load-windowpaths.XXXXXX)"
   {
-    printf 'declare -a WINDOWIDS\n'
+    printf 'declare -a WINDOW_PATHS\n'
     for (( i=0; i<$NUM_WINDOWS; i++ )); do
-      [ -n "${WINDOWIDS[$i]:-}" ] || continue
-      printf 'WINDOWIDS[%d]=%q\n' "$i" "${WINDOWIDS[$i]}"
+      [ -n "${WINDOW_PATHS[$i]:-}" ] || continue
+      printf 'WINDOW_PATHS[%d]=%q\n' "$i" "${WINDOW_PATHS[$i]}"
     done
   } >"$out"
   printf '%s\n' "$out"
 }
 
+# Start a deferred "apply window properties" helper in a transient systemd unit.
 run_deferred_apply()
 {
-  local windowids_file="$1"
+  local window_paths_file="$1"
 
   if running_under_systemd && command -v systemd-run >/dev/null 2>&1; then
     # Start a transient unit so the deferred work does not live in this oneshot
@@ -53,16 +96,11 @@ run_deferred_apply()
       --quiet
       --collect
       --unit="$unit"
-      # Pass GUI env through explicitly; systemd-run units do not automatically
-      # inherit this from the calling process in a reliable way.
-#      --setenv=DISPLAY="${DISPLAY:-}"
-#      --setenv=XAUTHORITY="${XAUTHORITY:-}"
-#      --setenv=DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}"
       --setenv=KONSOLE_LOAD_MODE=apply
-      --setenv=KONSOLE_LOAD_WINDOWIDS_FILE="$windowids_file"
+      --setenv=KONSOLE_LOAD_WINDOW_PATHS_FILE="$window_paths_file"
     )
 
-    if is_truthy "$KONSOLE_LOAD_DEBUG"; then
+    if [ -n "$KONSOLE_LOAD_DEBUG" ]; then
       cmd+=(--setenv=KONSOLE_LOAD_DEBUG=1)
     else
       # Keep default behavior quiet; still keep stderr in the journal in case of errors.
@@ -73,12 +111,8 @@ run_deferred_apply()
     return $?
   fi
 
-  # Fallback for non-systemd execution: keep old behavior (best-effort).
-  if is_truthy "$KONSOLE_LOAD_DEBUG"; then
-    KONSOLE_LOAD_MODE=apply KONSOLE_LOAD_WINDOWIDS_FILE="$windowids_file" "$SELF_PATH" &
-  else
-    KONSOLE_LOAD_MODE=apply KONSOLE_LOAD_WINDOWIDS_FILE="$windowids_file" "$SELF_PATH" >/dev/null 2>&1 &
-  fi
+  # Fallback for non-systemd execution.
+  KONSOLE_LOAD_MODE=apply KONSOLE_LOAD_WINDOW_PATHS_FILE="$window_paths_file" "$SELF_PATH" &
 }
 
 # Initialize associative arrays.
@@ -109,12 +143,346 @@ eval "$(
 
 NUM_WINDOWS=${#WIN_TITLES[@]}
 
+# Normalize a window id to the "0x%08x" format used by wmctrl.
 normalize_window_id()
 {
   # Accepts decimal or 0xHEX, returns 0xXXXXXXXX.
   printf "0x%08x" "$(( $1 ))"
 }
 
+# Print the current Konsole DBus service name (if any).
+konsole_dbus_service()
+{
+  # Typical service names: org.kde.konsole or org.kde.konsole-<pid>
+  qdbus 2>/dev/null | awk '{$1=$1;print}' | grep -E '^org\.kde\.konsole(-[0-9]+)?$' | head -n 1
+}
+
+# Wait until Konsole's DBus service appears, then print it.
+wait_konsole_dbus_service()
+{
+  local tries="${WAIT_KONSOLE_DBUS_TRIES:-200}"   # 200 * 0.05s = 10s
+  local sleep_s="${WAIT_KONSOLE_DBUS_SLEEP:-0.05}"
+  local s i
+
+  for (( i=0; i<tries; i++ )); do
+    s="$(konsole_dbus_service)"
+    [ -n "$s" ] && { printf '%s\n' "$s"; return 0; }
+    sleep "$sleep_s"
+  done
+
+  return 1
+}
+
+# List current Konsole /Windows/N object paths on DBus.
+list_konsole_window_paths()
+{
+  [ -z "${KONSOLE_DBUS_SERVICE:-}" ] && return 1
+  qdbus "$KONSOLE_DBUS_SERVICE" 2>/dev/null | grep -E '^/Windows/[0-9]+$' | sort -u
+}
+
+# Wait for one new Konsole /Windows/N compared to the snapshot on stdin.
+wait_new_konsole_window_path()
+{
+  # Wait for exactly one new Konsole /Windows/N compared to snapshot given on stdin.
+  local tmp_before tmp_after
+  local new_paths
+
+  tmp_before=$(mktemp)
+  tmp_after=$(mktemp)
+  cat >"$tmp_before"
+
+  for _ in {1..200}; do
+    if ! list_konsole_window_paths >"$tmp_after"; then
+      sleep 0.05
+      continue
+    fi
+
+    new_paths=$(comm -13 "$tmp_before" "$tmp_after")
+    if [ "$(printf '%s\n' "$new_paths" | sed '/^$/d' | wc -l)" -eq 1 ]; then
+      printf '%s\n' "$new_paths"
+      rm -f "$tmp_before" "$tmp_after"
+      return 0
+    fi
+
+    sleep 0.05
+  done
+
+  rm -f "$tmp_before" "$tmp_after"
+  return 1
+}
+
+# Return a session id for the given /Windows/N (currentSession or first in sessionList).
+window_first_session_id()
+{
+  local win_path="$1"
+  local out s
+
+  # Prefer currentSession if it exists.
+  out="$(qdbus "$KONSOLE_DBUS_SERVICE" "$win_path" org.kde.konsole.Window.currentSession 2>/dev/null || true)"
+  s="$(printf '%s\n' "$out" | awk '{print $1}' | head -n 1)"
+  if [[ "$s" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$s"
+    return 0
+  fi
+
+  out="$(qdbus "$KONSOLE_DBUS_SERVICE" "$win_path" org.kde.konsole.Window.sessionList 2>/dev/null || true)"
+  s="$(printf '%s\n' "$out" | head -n 1 | awk '{print $1}')"
+  [[ "$s" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$s"
+}
+
+# Return the shell process ID for a Konsole session if available.
+session_pid_once()
+{
+  local session_id="$1"
+  local pid
+
+  pid="$(qdbus "$KONSOLE_DBUS_SERVICE" "/Sessions/$session_id" org.kde.konsole.Session.processId 2>/dev/null || true)"
+  pid="$(printf '%s\n' "$pid" | awk '{print $1}' | head -n 1)"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  [ -d "/proc/$pid" ] || return 1
+  printf '%s\n' "$pid"
+}
+
+# Wait until a session has a valid process ID, then print it.
+wait_session_pid()
+{
+  local session_id="$1"
+  local tries="${WAIT_SESSION_PID_TRIES:-200}" # 10s
+  local sleep_s="${WAIT_SESSION_PID_SLEEP:-0.05}"
+  local pid i
+
+  for (( i=0; i<tries; i++ )); do
+    pid="$(session_pid_once "$session_id" || true)"
+    [[ "$pid" =~ ^[0-9]+$ ]] && { printf '%s\n' "$pid"; return 0; }
+    sleep "$sleep_s"
+  done
+
+  return 1
+}
+
+# Read the X11 WINDOWID from a PID's environment (decimal).
+pid_windowid_dec()
+{
+  local pid="$1"
+  tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | sed -n 's/^WINDOWID=//p' | head -n 1
+}
+
+# Resolve a Konsole /Windows/N DBus object path to an X11 window id in hex.
+wait_window_x11_wid_hex_for_window_path()
+{
+  local win_path="$1"
+  local tries="${WAIT_WINDOWID_TRIES:-200}" # 10s
+  local sleep_s="${WAIT_WINDOWID_SLEEP:-0.05}"
+  local s pid wid_dec i
+
+  for (( i=0; i<tries; i++ )); do
+    s="$(window_first_session_id "$win_path" || true)"
+    if [[ "$s" =~ ^[0-9]+$ ]]; then
+      pid="$(session_pid_once "$s" || true)"
+      if [[ "$pid" =~ ^[0-9]+$ ]]; then
+        wid_dec="$(pid_windowid_dec "$pid")"
+        if [[ "$wid_dec" =~ ^[0-9]+$ ]]; then
+          normalize_window_id "$wid_dec"
+          return 0
+        fi
+      fi
+    fi
+
+    sleep "$sleep_s"
+  done
+
+  return 1
+}
+
+# Wrap a string in single quotes for safe shell usage.
+shell_single_quote()
+{
+  # Safe for bash/sh: wraps in single quotes and escapes embedded single quotes.
+  printf "'%s'" "${1//\'/\'\"\'\"\'}"
+}
+
+# Create a new Konsole session (tab) under a given /Windows/N (captures flags).
+window_new_session()
+{
+  local win_path="$1"
+  local profile="${2:-}"
+  local cwd="${3:-}"
+  local out sid ec
+
+  WINDOW_NEW_SESSION_ID=""
+  WINDOW_NEW_SESSION_PROFILE_SET=0
+  WINDOW_NEW_SESSION_CWD_SET=0
+
+  # Try the most specific call signatures first (some Konsole versions accept
+  # profile/cwd as args), then fall back to no-arg newSession.
+  if [ -n "$profile" ] && [ -n "$cwd" ]; then
+    out="$(qdbus "$KONSOLE_DBUS_SERVICE" "$win_path" org.kde.konsole.Window.newSession "$profile" "$cwd" 2>&1)"; ec=$?
+    sid="$(printf '%s\n' "$out" | awk '{print $1}' | head -n 1)"
+    if [ $ec -eq 0 ] && [[ "$sid" =~ ^[0-9]+$ ]]; then
+      WINDOW_NEW_SESSION_ID="$sid"
+      WINDOW_NEW_SESSION_PROFILE_SET=1
+      WINDOW_NEW_SESSION_CWD_SET=1
+      return 0
+    fi
+    debug "Window.newSession(profile,cwd) failed (exit=$ec): $out"
+  fi
+
+  if [ -n "$profile" ]; then
+    out="$(qdbus "$KONSOLE_DBUS_SERVICE" "$win_path" org.kde.konsole.Window.newSession "$profile" 2>&1)"; ec=$?
+    sid="$(printf '%s\n' "$out" | awk '{print $1}' | head -n 1)"
+    if [ $ec -eq 0 ] && [[ "$sid" =~ ^[0-9]+$ ]]; then
+      WINDOW_NEW_SESSION_ID="$sid"
+      WINDOW_NEW_SESSION_PROFILE_SET=1
+      return 0
+    fi
+    debug "Window.newSession(profile) failed (exit=$ec): $out"
+  fi
+
+  out="$(qdbus "$KONSOLE_DBUS_SERVICE" "$win_path" org.kde.konsole.Window.newSession 2>&1)"; ec=$?
+  sid="$(printf '%s\n' "$out" | awk '{print $1}' | head -n 1)"
+  if [ $ec -eq 0 ] && [[ "$sid" =~ ^[0-9]+$ ]]; then
+    WINDOW_NEW_SESSION_ID="$sid"
+    return 0
+  fi
+  debug "Window.newSession() failed (exit=$ec): $out"
+  return 1
+}
+
+# Wait until a given /Windows/N reports a session id in its sessionList.
+wait_window_has_session()
+{
+  local win_path="$1"
+  local session_id="$2"
+  local tries="${WAIT_WINDOW_SESSION_TRIES:-200}"
+  local sleep_s="${WAIT_WINDOW_SESSION_SLEEP:-0.05}"
+  local out i
+
+  for (( i=0; i<tries; i++ )); do
+    out="$(qdbus "$KONSOLE_DBUS_SERVICE" "$win_path" org.kde.konsole.Window.sessionList 2>/dev/null || true)"
+    if printf '%s\n' "$out" | awk '{print $1}' | grep -qx "$session_id"; then
+      return 0
+    fi
+    sleep "$sleep_s"
+  done
+  return 1
+}
+
+# Try to set the Konsole session's profile via DBus.
+session_set_profile()
+{
+  local session_id="$1"
+  local profile="$2"
+  local out ec
+  [ -z "$profile" ] && return 0
+  out="$(qdbus "$KONSOLE_DBUS_SERVICE" "/Sessions/$session_id" org.kde.konsole.Session.setProfile "$profile" 2>&1)"; ec=$?
+  if [ $ec -ne 0 ]; then
+    debug "Session.setProfile($profile) failed (exit=$ec): $out"
+    debug_dump_qdbus_iface "/Sessions/$session_id" org.kde.konsole.Session
+  fi
+  return $ec
+}
+
+# Try to set the Konsole session's working directory via DBus (if supported).
+session_set_cwd_direct()
+{
+  local session_id="$1"
+  local cwd="$2"
+
+  [ -z "$cwd" ] && return 0
+
+  # Try a couple of likely method names across Konsole versions.
+  qdbus "$KONSOLE_DBUS_SERVICE" "/Sessions/$session_id" org.kde.konsole.Session.setInitialWorkingDirectory "$cwd" >/dev/null 2>&1 && return 0
+  qdbus "$KONSOLE_DBUS_SERVICE" "/Sessions/$session_id" org.kde.konsole.Session.setCurrentDirectory "$cwd" >/dev/null 2>&1 && return 0
+  qdbus "$KONSOLE_DBUS_SERVICE" "/Sessions/$session_id" org.kde.konsole.Session.setWorkingDirectory "$cwd" >/dev/null 2>&1 && return 0
+  return 1
+}
+
+# Run a command inside a Konsole session via DBus.
+session_run_command()
+{
+  local session_id="$1"
+  shift
+  # Some qdbus versions allow omitting the interface; prefer explicit.
+  qdbus "$KONSOLE_DBUS_SERVICE" "/Sessions/$session_id" org.kde.konsole.Session.runCommand "$@" >/dev/null 2>&1 ||
+    qdbus "$KONSOLE_DBUS_SERVICE" "/Sessions/$session_id" runCommand "$@" >/dev/null 2>&1
+}
+
+# Best-effort: set cwd for a session (direct API if available, else `cd` command).
+session_try_set_cwd()
+{
+  local session_id="$1"
+  local cwd="$2"
+  local pid cur
+
+  [ -z "$cwd" ] && return 0
+
+  # Prefer direct API if available.
+  if ! session_set_cwd_direct "$session_id" "$cwd"; then
+    session_run_command "$session_id" "cd -- $(shell_single_quote "$cwd")" || return 1
+  fi
+
+  # Best-effort verification: if the shell pid is already known, verify /proc/<pid>/cwd.
+  pid="$(session_pid_once "$session_id" || true)"
+  if [[ "$pid" =~ ^[0-9]+$ ]]; then
+    cur="$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true)"
+    [ -n "$cur" ] && [ "$cur" = "$(readlink -f "$cwd" 2>/dev/null || printf '%s' "$cwd")" ] && return 0
+  fi
+
+  return 0
+}
+
+# Add a new tab to an existing Konsole /Windows/N and set profile/cwd.
+add_tab_to_window()
+{
+  local win_path="$1"
+  local profile="$2"
+  local cwd="$3"
+  local sid pid
+  local prof_ok=0
+
+  # The Window can exist on DBus slightly before it is ready to accept newSession.
+  for _ in {1..50}; do
+    if window_new_session "$win_path" "$profile" "$cwd"; then
+      sid="$WINDOW_NEW_SESSION_ID"
+      break
+    fi
+    sleep 0.05
+  done
+  [[ "$sid" =~ ^[0-9]+$ ]] || return 1
+
+  wait_window_has_session "$win_path" "$sid" || return 1
+  pid="$(wait_session_pid "$sid" || true)"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+
+  # If Window.newSession(profile...) succeeded, the profile is already set and
+  # some Konsole versions don't expose Session.setProfile.
+  if [ -n "$profile" ] && [ "${WINDOW_NEW_SESSION_PROFILE_SET:-0}" -ne 1 ]; then
+    # Profile can be rejected briefly while the new session is still initializing.
+    for _ in {1..20}; do
+      if session_set_profile "$sid" "$profile"; then
+        prof_ok=1
+        break
+      fi
+      sleep 0.05
+    done
+    if [ "$prof_ok" -ne 1 ]; then
+      return 1
+    fi
+  fi
+
+  if [ -n "$cwd" ] && [ "${WINDOW_NEW_SESSION_CWD_SET:-0}" -eq 1 ]; then
+    return 0
+  fi
+
+  for _ in {1..20}; do
+    session_try_set_cwd "$sid" "$cwd" && return 0
+    sleep 0.05
+  done
+  return 1
+}
+
+# Wait until wmctrl can talk to the window manager (EWMH ready).
 wait_wmctrl_ready()
 {
   # wmctrl requires an EWMH-capable window manager to set _NET_CLIENT_LIST on the root window.
@@ -132,6 +500,7 @@ wait_wmctrl_ready()
   return 1
 }
 
+# Get the virtual desktop size as "<width> <height>".
 desktop_size()
 {
   # Usage: desktop_size <desktop_index>
@@ -151,6 +520,7 @@ desktop_size()
   '
 }
 
+# Wait until the desktop size is large enough to place the window at x/y.
 wait_desktop_size()
 {
   # Usage: wait_desktop_size <desktop_index> <x> <y>
@@ -184,68 +554,17 @@ wait_desktop_size()
   return 1
 }
 
-list_konsole_wids()
-{
-  # Output hex window IDs (like 0x03e00007), one per line.
-  # Do not depend on a running WM: xdotool queries X11 directly.
-  local ids id
-  ids="$(
-    {
-      xdotool search --class 'konsole|Konsole|org\\.kde\\.konsole' 2>/dev/null || true
-      xdotool search --classname 'konsole|Konsole|org\\.kde\\.konsole' 2>/dev/null || true
-    } | sed '/^$/d' | sort -n -u
-  )"
-
-  [ -z "$ids" ] && return 0
-
-  while read -r id; do
-    [ -z "$id" ] && continue
-    printf '%s\n' "$(normalize_window_id "$id")"
-  done <<<"$ids"
-}
-
-wait_new_konsole_wid()
-{
-  # Wait for exactly one new Konsole window compared to the snapshot given on stdin.
-  local tmp_before tmp_after
-  local new_wids
-
-  tmp_before=$(mktemp)
-  tmp_after=$(mktemp)
-
-  cat >"$tmp_before"
-
-  for _ in {1..50}; do
-    if ! list_konsole_wids | sort -u >"$tmp_after"; then
-      echo 'wait_new_konsole_wid: list_konsole_wids failed.' >&2
-      sleep 0.05
-      continue
-    fi
-
-    # Set difference: after \ before.
-    new_wids=$(comm -13 "$tmp_before" "$tmp_after")
-
-    # If exactly one new window: return it.
-    if [ "$(printf '%s\n' "$new_wids" | sed '/^$/d' | wc -l)" -eq 1 ]; then
-      echo "wait_new_konsole_wid: success; new_wids=\"$new_wids\"." >&2
-      printf '%s\n' "$new_wids"
-      rm -f "$tmp_before" "$tmp_after"
-      return 0
-    else
-      echo "wait_new_konsole_wid: ignoring because new_wids=\"$new_wids\"." >&2
-    fi
-
-    sleep 0.2
-  done
-
-  echo "wait_new_konsole_wid: timed out. new_wids=\"$new_wids\", tmp_before=\"$(cat $tmp_before)\", tmp_after=\"$(cat $tmp_after)\"." >&2
-  rm -f "$tmp_before" "$tmp_after"
-  return 1
-}
-
+# Apply saved workspace/geometry to all restored windows using wmctrl.
 apply_window_properties()
 {
-  local i wid
+  local i win_path wid
+
+  KONSOLE_DBUS_SERVICE="${KONSOLE_DBUS_SERVICE:-}"
+  [ -z "$KONSOLE_DBUS_SERVICE" ] && KONSOLE_DBUS_SERVICE="$(wait_konsole_dbus_service || true)"
+  if [ -z "$KONSOLE_DBUS_SERVICE" ]; then
+    echo "Failed to detect Konsole DBus service for apply_window_properties." >&2
+    return 1
+  fi
 
   wait_wmctrl_ready || {
     echo "wmctrl is not ready (no EWMH window manager yet?)" >&2
@@ -253,8 +572,13 @@ apply_window_properties()
   }
 
   for (( i=0; i<$NUM_WINDOWS; i++ )); do
-    wid="${WINDOWIDS[$i]}"
-    [ -z "$wid" ] && continue
+    win_path="${WINDOW_PATHS[$i]}"
+    [ -z "$win_path" ] && continue
+
+    wid="$(wait_window_x11_wid_hex_for_window_path "$win_path")" || {
+      echo "apply_window_properties: failed to resolve X11 WINDOWID for $win_path" >&2
+      return 1
+    }
 
     echo "apply_window_properties: processing $wid"
 
@@ -279,17 +603,17 @@ apply_window_properties()
   done
 }
 
-declare -a WINDOWIDS
+declare -a WINDOW_PATHS
 
 if [ "${KONSOLE_LOAD_MODE:-}" = "apply" ]; then
-  if [ -z "${KONSOLE_LOAD_WINDOWIDS_FILE:-}" ] || [ ! -f "${KONSOLE_LOAD_WINDOWIDS_FILE:-}" ]; then
-    echo "KONSOLE_LOAD_MODE=apply requires KONSOLE_LOAD_WINDOWIDS_FILE to exist." >&2
+  if [ -z "${KONSOLE_LOAD_WINDOW_PATHS_FILE:-}" ] || [ ! -f "${KONSOLE_LOAD_WINDOW_PATHS_FILE:-}" ]; then
+    echo "KONSOLE_LOAD_MODE=apply requires KONSOLE_LOAD_WINDOW_PATHS_FILE to exist." >&2
     exit 1
   fi
 
   # shellcheck source=/dev/null
-  source "$KONSOLE_LOAD_WINDOWIDS_FILE"
-  rm -f "$KONSOLE_LOAD_WINDOWIDS_FILE" || true
+  source "$KONSOLE_LOAD_WINDOW_PATHS_FILE"
+  rm -f "$KONSOLE_LOAD_WINDOW_PATHS_FILE" || true
   apply_window_properties || exit 1
   exit 0
 fi
@@ -303,37 +627,46 @@ for (( i=0; i<$NUM_WINDOWS; i++ )); do
   NUM_TABS=${#TAB_CWDS[@]}
 
   # Sanity check.
-  if (( ${#WIN_CWDS[@]} == 0 )); then
+  if (( NUM_TABS == 0 )); then
     echo "No tabs for window $i." >&2
     exit 1
   fi
-  if (( ${#WIN_PROFILES[@]} < NUM_TABS )); then
+  if (( ${#TAB_PROFILES[@]} < NUM_TABS )); then
     echo "Not enough profiles for window $i." >&2
     exit 1
   fi
 
-  before=$(list_konsole_wids | sort -u)
-  echo -n "(window ids before: $(echo "$before" | xargs echo)) : "
+  KONSOLE_DBUS_SERVICE="$(konsole_dbus_service || true)"
+  before_windows=""
+  if [ -n "$KONSOLE_DBUS_SERVICE" ]; then
+    before_windows="$(list_konsole_window_paths || true)"
+  fi
+  echo -n "(windows before: $(echo "$before_windows" | xargs echo)) : "
 
   setsid konsole --profile "${TAB_PROFILES[0]:-Profile 1}" --workdir "${TAB_CWDS[0]}" </dev/null >/dev/null 2>&1 &
+  [ -z "$KONSOLE_DBUS_SERVICE" ] && KONSOLE_DBUS_SERVICE="$(wait_konsole_dbus_service)" || true
+  [ -z "$KONSOLE_DBUS_SERVICE" ] && { echo "Failed to detect Konsole DBus service." >&2; exit 1; }
 
-  WINDOWID=$(printf '%s\n' "$before" | wait_new_konsole_wid) || {
-    echo "Failed to detect new Konsole window." >&2
+  WINDOW_PATH="$(printf '%s\n' "$before_windows" | wait_new_konsole_window_path)" || {
+    echo "Failed to detect new Konsole /Windows/N." >&2
     exit 1
   }
 
   for (( t=1; t<$NUM_TABS; t++ )); do
-    konsole --new-tab --profile "${TAB_PROFILES[$t]}" --workdir "${TAB_CWDS[$t]}"
+    add_tab_to_window "$WINDOW_PATH" "${TAB_PROFILES[$t]}" "${TAB_CWDS[$t]}" || {
+      err "Failed to add tab $t to $WINDOW_PATH (profile=\"${TAB_PROFILES[$t]}\", cwd=\"${TAB_CWDS[$t]}\")."
+      exit 1
+    }
   done
 
-  WINDOWIDS[$i]="$WINDOWID"
-  echo "$WINDOWID"
+  WINDOW_PATHS[$i]="$WINDOW_PATH"
+  echo "$WINDOW_PATH"
 done
 
 # If a WM is already up, apply immediately. Otherwise, defer until it is.
 if wmctrl -lx >/dev/null 2>&1; then
   apply_window_properties || exit 1
 else
-  windowids_file="$(write_windowids_file)"
-  run_deferred_apply "$windowids_file" || exit 1
+  window_paths_file="$(write_window_paths_file)"
+  run_deferred_apply "$window_paths_file" || exit 1
 fi

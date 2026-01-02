@@ -18,12 +18,14 @@ flock -n 200 || exit 0
 declare -A WIN_TITLES
 declare -A WIN_WORKSPACES
 
+# Normalize a window id to the "0x%08x" format used by wmctrl.
 normalize_window_id()
 {
   # Accepts decimal or 0xHEX, returns 0xXXXXXXXX.
   printf "0x%08x" "$(( $1 ))"
 }
 
+# Print "x y w h" for the client window geometry (xwininfo).
 get_client_geometry_xywh()
 {
   # Prints: "x y w h" for the client window geometry.
@@ -44,6 +46,7 @@ get_client_geometry_xywh()
   printf '%s %s %s %s\n' "$x" "$y" "$w" "$h"
 }
 
+# Print "_NET_FRAME_EXTENTS" as "l r t b" (xprop).
 get_frame_extents_lrtb()
 {
   # Prints: "l r t b" (defaults to 0s if missing).
@@ -69,6 +72,7 @@ get_frame_extents_lrtb()
   printf '%s %s %s %s\n' "$l" "$r" "$t" "$b"
 }
 
+# Print "x y w h" for the outer window geometry (client + frame extents).
 get_outer_geometry_xywh()
 {
   # Prints: "x y w h" for the outer (frame-inclusive) geometry.

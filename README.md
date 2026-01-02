@@ -14,6 +14,8 @@ Run `./install.sh`.
 Configure konsole to use single-process mode:
 `Settings -> Configure Konsole... -> General -> Run all Konsole windows in a single process`.
 
+`konsole-load` restores tabs via Konsole's DBus API (`qdbus`), so DBUS_SESSION_BUS_ADDRESS/DISPLAY/XAUTHORITY must be set for the user service.
+
 Start the service `graphical-session.target` after Xorg is already running.
 Optionally, stop the service if your window manager can hard-exit (while Xorg
 and konsole still run). Rebooting normally should already take of that.
