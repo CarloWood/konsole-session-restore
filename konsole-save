@@ -46,9 +46,8 @@ print_error()
   echo "ERROR: $*" >&2
 }
 
-# Fill associative arrays with wmctrl data.
-declare -A WIN_TITLES
-declare -A WIN_WORKSPACES
+# Always emit one start line so the journal shows that konsole-save actually ran.
+print_error "konsole-save starting (DISPLAY=${DISPLAY:-<unset>} XAUTHORITY=${XAUTHORITY:-<unset>} DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-<unset>})"
 
 # Normalize a window id to the "0x%08x" format used by wmctrl.
 normalize_window_id()
@@ -122,9 +121,13 @@ get_outer_geometry_xywh()
     "$((ch))"
 }
 
+# Fill associative arrays with wmctrl data.
+declare -A WIN_TITLES
+declare -A WIN_WORKSPACES
+
 wmctrl_out="$(wmctrl -l -x 2>&1)"; wmctrl_ec=$?
 if [ $wmctrl_ec -ne 0 ]; then
-  debug "wmctrl -l -x failed (exit=$wmctrl_ec): $wmctrl_out"
+  print_error "wmctrl -l -x failed (exit=$wmctrl_ec, DISPLAY=${DISPLAY:-<unset>}, XAUTHORITY=${XAUTHORITY:-<unset>}): $wmctrl_out"
   wmctrl_out=""
 fi
 
@@ -136,12 +139,12 @@ done < <(printf '%s\n' "$wmctrl_out" | grep 'konsole.konsole')
 
 qdbus_list="$(qdbus 2>&1)"; qdbus_ec=$?
 if [ $qdbus_ec -ne 0 ]; then
-  debug "qdbus failed (exit=$qdbus_ec): $qdbus_list"
+  print_error "qdbus failed (exit=$qdbus_ec, DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-<unset>}): $qdbus_list"
   exit 1
 fi
 
 SERVICE="$(printf '%s\n' "$qdbus_list" | awk '{$1=$1;print}' | grep org.kde.konsole | head -n 1)"
-[ -z "$SERVICE" ] && { debug "No org.kde.konsole DBus service found."; exit 1; }
+[ -z "$SERVICE" ] && { print_error "No org.kde.konsole DBus service found (DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-<unset>})."; exit 1; }
 
 debug "SERVICE=\"${SERVICE}\""
 
