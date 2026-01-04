@@ -37,7 +37,8 @@ fi
 # Emit a debug message to stderr when KONSOLE_SAVE_DEBUG is enabled.
 debug()
 {
-  [ -n "$KONSOLE_SAVE_DEBUG" ] && echo "DEBUG: $*" >&2
+  local msg="${*//$'\n'/\\n}"
+  [ -n "$KONSOLE_SAVE_DEBUG" ] && echo "DEBUG: $msg" >&2
 }
 
 # Emit an error message to stderr.
@@ -47,7 +48,7 @@ print_error()
 }
 
 # Always emit one start line so the journal shows that konsole-save actually ran.
-print_error "konsole-save starting (DISPLAY=${DISPLAY:-<unset>} XAUTHORITY=${XAUTHORITY:-<unset>} DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-<unset>})"
+debug "konsole-save starting (DISPLAY=${DISPLAY:-<unset>} XAUTHORITY=${XAUTHORITY:-<unset>} DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-<unset>})"
 
 # Normalize a window id to the "0x%08x" format used by wmctrl.
 normalize_window_id()
@@ -128,7 +129,7 @@ declare -A WIN_WORKSPACES
 wmctrl_out="$(wmctrl -l -x 2>&1)"; wmctrl_ec=$?
 if [ $wmctrl_ec -ne 0 ]; then
   print_error "wmctrl -l -x failed (exit=$wmctrl_ec, DISPLAY=${DISPLAY:-<unset>}, XAUTHORITY=${XAUTHORITY:-<unset>}): $wmctrl_out"
-  wmctrl_out=""
+  exit 1
 fi
 
 while read -r winid workspace host class title; do
@@ -151,22 +152,13 @@ debug "SERVICE=\"${SERVICE}\""
 echo "[" > "$JSON_FILE"
 
 windows=$(qdbus "$SERVICE" | grep -E '^/Windows/[0-9]+$')
-if [ -n "$KONSOLE_SAVE_DEBUG" ]; then
-  echo -n "windows=\"" >&2
-  echo -n ${windows} | xargs echo -n >&2
-  echo "\"" >&2
-fi
+debug "windows=\"${windows}\""
 
 first_win=true
 for win_path in $windows; do
   visual_order=$(qdbus "$SERVICE" "$win_path" org.kde.konsole.Window.sessionList)
   ref_session=$(echo "$visual_order" | head -n 1 | awk '{print $1}')
-  if [ -n "$KONSOLE_SAVE_DEBUG" ]; then
-    echo >&2
-    echo -n "$win_path : visual_order=\"" >&2
-    echo -n ${visual_order} | xargs echo -n >&2
-    echo "\", ref_session=${ref_session}" >&2
-  fi
+  debug "$win_path : visual_order=\"${visual_order}\", ref_session=${ref_session}"
   [ -z "$ref_session" ] && continue
 
   ref_pid=$(qdbus "$SERVICE" "/Sessions/$ref_session" org.kde.konsole.Session.processId)
@@ -207,14 +199,8 @@ for win_path in $windows; do
     s_profile=$(qdbus "$SERVICE" "/Sessions/$s_id" org.kde.konsole.Session.profile)
     session_profiles+=("$s_profile")
   done
-  if [ -n "$KONSOLE_SAVE_DEBUG" ]; then
-    echo -n "$win_path : session_cwds=[ " >&2
-    printf '"%s" ' "${session_cwds[@]}" >&2
-    echo "]" >&2
-    echo -n "$win_path : session_profiles=[ " >&2
-    printf '"%s" ' "${session_profiles[@]}" >&2
-    echo "]" >&2
-  fi
+  debug "$win_path : session_cwds=[ ${session_cwds[@]@Q} ]"
+  debug "$win_path : session_profiles=[ ${session_profiles[@]@Q} ]"
 
   [ "$first_win" = false ] && echo "," >> "$JSON_FILE"
   
