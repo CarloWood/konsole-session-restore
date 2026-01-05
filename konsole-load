@@ -257,6 +257,8 @@ print_error()
   echo "ERROR: $*" >&3
 }
 
+debug "Loading $JSON_FILE"
+
 # Dump the available DBus interface for troubleshooting (once per path+iface).
 debug_dump_qdbus_iface()
 {
@@ -290,6 +292,8 @@ run_deferred_apply()
 {
   local window_paths_file="$1"
 
+  # This avoids hanging a `systemctl start ...` that executes this script,
+  # while it needs to return in order to start the WM.
   if running_under_systemd && command -v systemd-run >/dev/null 2>&1; then
     # Start a transient unit so the deferred work does not live in this oneshot
     # unit's control group (otherwise systemd may kill it / warn about leftovers).
@@ -647,7 +651,7 @@ if [ "${KONSOLE_LOAD_MODE:-}" = "apply" ]; then
 fi
 
 for (( i=0; i<$NUM_WINDOWS; i++ )); do
-  [ -n "$KONSOLE_LOAD_DEBUG" ] && echo -n "Processing window $i "
+  [ -n "$KONSOLE_LOAD_DEBUG" ] && echo -n "Processing window $i " >&3
 
   readarray -t TAB_CWDS <<< "${WIN_CWDS[$i]}"
   readarray -t TAB_PROFILES <<< "${WIN_PROFILES[$i]}"
@@ -669,7 +673,7 @@ for (( i=0; i<$NUM_WINDOWS; i++ )); do
   if [ -n "$KONSOLE_DBUS_SERVICE" ]; then
     before_windows="$(list_konsole_window_paths || true)"
   fi
-  [ -n "$KONSOLE_LOAD_DEBUG" ] && echo -n "(windows before: $(echo "$before_windows" | xargs echo)) : "
+  [ -n "$KONSOLE_LOAD_DEBUG" ] && echo -n "(windows before: $(echo "$before_windows" | xargs echo)) : " >&3
 
   setsid konsole --profile "${TAB_PROFILES[0]:-Profile 1}" --workdir "${TAB_CWDS[0]}" </dev/null >/dev/null 2>&1 &
   [ -z "$KONSOLE_DBUS_SERVICE" ] && KONSOLE_DBUS_SERVICE="$(wait_konsole_dbus_service)" || true
@@ -688,7 +692,7 @@ for (( i=0; i<$NUM_WINDOWS; i++ )); do
   done
 
   WINDOW_PATHS[$i]="$WINDOW_PATH"
-  [ -n "$KONSOLE_LOAD_DEBUG" ] && echo "$WINDOW_PATH"
+  [ -n "$KONSOLE_LOAD_DEBUG" ] && echo "$WINDOW_PATH" >&3
 done
 
 # If a WM is already up, apply immediately. Otherwise, defer until it is.
