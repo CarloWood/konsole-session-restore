@@ -1,4 +1,4 @@
-#!/usr/bin/bash
+#!/bin/bash
 
 # konsole-save
 #
@@ -34,17 +34,20 @@ else
   KONSOLE_SAVE_DEBUG=
 fi
 
+# Use fd 3 to write to the syslog.
+exec 3> >(/usr/bin/logger --stderr --id=$$ --tag="konsole-save")
+
 # Emit a debug message to stderr when KONSOLE_SAVE_DEBUG is enabled.
 debug()
 {
   local msg="${*//$'\n'/\\n}"
-  [ -n "$KONSOLE_SAVE_DEBUG" ] && echo "DEBUG: $msg" >&2
+  [ -n "$KONSOLE_SAVE_DEBUG" ] && echo "DEBUG: $msg" >&3
 }
 
 # Emit an error message to stderr.
 print_error()
 {
-  echo "ERROR: $*" >&2
+  echo "ERROR: $*" >&3
 }
 
 # Always emit one start line so the journal shows that konsole-save actually ran.

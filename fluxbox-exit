@@ -1,0 +1,4 @@
+#!/bin/bash
+
+KONSOLE_SAVE_DEBUG=1 /home/carlo/.local/bin/konsole-save
+exec fluxbox-remote exit

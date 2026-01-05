@@ -17,22 +17,10 @@ for exe in konsole-save; do
 done
 echo
 echo "Installing scripts to $LIBEXEC_DIR..."
-for exe in konsole-load; do
+for exe in konsole-load fluxbox-exit; do
   echo -n " $exe"
   ln -sf $PWD/$exe $LIBEXEC_DIR/$exe
 done
 echo
-
-# 3. Install Systemd Units (to user config)
-echo -n "Linking systemd units..."
-for unit in konsole-session.service; do
-  echo -n " $unit"
-  systemctl --user link "$PWD/$unit"
-done
-echo
-
-# 4. Reload systemd daemon
-echo "Reloading systemd user daemon..."
-systemctl --user daemon-reload
 
 echo "--- Done! ---"

@@ -27,7 +27,7 @@ Then add the following to `~/.xprofile`:
 # Give the user manager the required session variables.
 dbus-update-activation-environment --systemd DBUS_SESSION_BUS_ADDRESS DISPLAY XAUTHORITY
 # Start the konsole-session service.
-systemctl --user --noblock start konsole-session.service
+systemctl --user --no-block start konsole-session.service
 ```
 
 ## Debugging
@@ -43,6 +43,7 @@ Environment=KONSOLE_LOAD_DEBUG=1
 Environment=KONSOLE_SAVE_DEBUG=1
 ```
 
+And `systemctl --user daemon-reload`.
 Remove again with `systemctl --user revert konsole-session.service` (this removes ALL edits made).
 
 - View logs for the current boot:

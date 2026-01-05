@@ -2,6 +2,8 @@
 
 # Set KONSOLE_LOAD_DEBUG=1 to avoid silencing deferred output.
 
+dbus-update-activation-environment DBUS_SESSION_BUS_ADDRESS DISPLAY XAUTHORITY
+
 JSON_FILE="$HOME/.konsole_state.json"
 [ ! -f "$JSON_FILE" ] && { echo "JSON file not found"; exit 0; }
 
@@ -240,16 +242,19 @@ else
   KONSOLE_LOAD_DEBUG=
 fi
 
+# Use fd 3 to write to the syslog.
+exec 3> >(/usr/bin/logger --stderr --id=$$ --tag="konsole-load")
+
 # Emit a debug message to stderr when KONSOLE_LOAD_DEBUG is enabled.
 debug()
 {
-  [ -n "$KONSOLE_LOAD_DEBUG" ] && echo "DEBUG: $*" >&2
+  [ -n "$KONSOLE_LOAD_DEBUG" ] && echo "DEBUG: $*" >&3
 }
 
 # Emit an error message to stderr.
-err()
+print_error()
 {
-  echo "ERROR: $*" >&2
+  echo "ERROR: $*" >&3
 }
 
 # Dump the available DBus interface for troubleshooting (once per path+iface).
