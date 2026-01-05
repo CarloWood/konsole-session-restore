@@ -17,7 +17,7 @@ for exe in konsole-save; do
 done
 echo
 echo "Installing scripts to $LIBEXEC_DIR..."
-for exe in konsole-load start-konsole-save-service; do
+for exe in konsole-load; do
   echo -n " $exe"
   ln -sf $PWD/$exe $LIBEXEC_DIR/$exe
 done
@@ -25,15 +25,11 @@ echo
 
 # 3. Install Systemd Units (to user config)
 echo -n "Linking systemd units..."
-for unit in konsole-session.service konsole-save@.service; do
+for unit in konsole-session.service; do
   echo -n " $unit"
   systemctl --user link "$PWD/$unit"
 done
 echo
-
-# 4. Enable konsole-session.service or it won't be started when (user) default.target comes up.
-echo "Enabling konsole-session.service..."
-systemctl --user enable konsole-session.service
 
 # 4. Reload systemd daemon
 echo "Reloading systemd user daemon..."

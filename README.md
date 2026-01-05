@@ -27,24 +27,12 @@ Then add the following to `~/.xprofile`:
 # Give the user manager the required session variables.
 dbus-update-activation-environment --systemd DBUS_SESSION_BUS_ADDRESS DISPLAY XAUTHORITY
 # Start the konsole-session service.
-systemctl --user start konsole-session.service
+systemctl --user --noblock start konsole-session.service
 ```
 
 ## Debugging
 
-- Enable verbose store logging:
-```
-systemctl --user edit konsole-save@.service
-```
-and add:
-```
-[Service]
-Environment=KONSOLE_SAVE_DEBUG=1
-```
-
-Remove again with `systemctl --user revert konsole-save@.service` (this removes ALL edits made).
-
-- Enable verbose deferred restore logging:
+- Enable verbose load and/or save logging:
 ```
 systemctl --user edit konsole-session.service
 ```
@@ -52,6 +40,7 @@ and add:
 ```
 [Service]
 Environment=KONSOLE_LOAD_DEBUG=1
+Environment=KONSOLE_SAVE_DEBUG=1
 ```
 
 Remove again with `systemctl --user revert konsole-session.service` (this removes ALL edits made).
