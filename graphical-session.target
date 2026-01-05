@@ -1,4 +1,0 @@
-[Unit]
-Description=X session is up (started from .xinitrc)
-Requires=dbus.service
-After=dbus.service

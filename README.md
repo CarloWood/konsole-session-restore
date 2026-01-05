@@ -11,41 +11,28 @@ Run `./install.sh`.
 
 ## Enabling the service
 
+You need some kind of Display Manager, for example `lightdm`.
+That starts up because the system reaches `graphical.target`.
+```
+systemctl set-default graphical.target
+```
+
 Configure konsole to use single-process mode:
 `Settings -> Configure Konsole... -> General -> Run all Konsole windows in a single process`.
 
-`konsole-load` restores tabs via Konsole's DBus API (`qdbus`), so DBUS_SESSION_BUS_ADDRESS/DISPLAY/XAUTHORITY must be set for the user service.
+`konsole-session.service` is started because it was enabled (by install.sh) and
+because it has `WantedBy=default.target` under `[Install]`, where `default.target`
+should be what `systemctl --user get-default` returns in your case (although `default.target`
+probably also keep working if you changed that).
 
-Start the service `graphical-session.target` after Xorg is already running.
-Optionally, stop the service if your window manager can hard-exit (while Xorg
-and konsole still run). Rebooting normally should already take of that.
+`konsole-load` restores tabs via Konsole's DBus API (`qdbus`),
+so DBUS_SESSION_BUS_ADDRESS/DISPLAY/XAUTHORITY must be set for the user service.
 
-For example, if you are using `fluxbox`, put the following at the end of your `.xinitrc`:
+For example, if you are using `.xinitrc` add the following lines to it:
 
 ```
 # Make sure the user manager sees the right GUI env.
 dbus-update-activation-environment --systemd DBUS_SESSION_BUS_ADDRESS DISPLAY XAUTHORITY
-
-# Start the systemd "graphical session" target (this will pull in konsole-session.service).
-systemctl --user --no-block start graphical-session.target
-
-# When fluxbox terminates, also stop graphical-session.target.
-# At this point Xorg and konsole should both still be running.
-fluxbox_exited() {
-  # This causes konsole-save to be run and doesn't return until that is finished.
-  systemctl --user stop graphical-session.target
-}
-
-# Stop graphical-session.target - in case it is still running - upon exit.
-trap fluxbox_exited EXIT HUP INT TERM
-
-# Start the Window Manager.
-startfluxbox &
-fb_pid=$!
-wait "$fb_pid"
-
-# The Window Manager did exit.
-exit 0
 ```
 
 ## Debugging

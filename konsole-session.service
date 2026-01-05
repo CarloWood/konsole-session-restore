@@ -1,7 +1,8 @@
 [Unit]
 Description=konsole session store/restore service
-ConditionEnvironment=DISPLAY
 ConditionEnvironment=DBUS_SESSION_BUS_ADDRESS
+ConditionEnvironment=DISPLAY
+ConditionEnvironment=XAUTHORITY
 
 [Service]
 Type=oneshot
@@ -10,6 +11,6 @@ ExecStartPre=%h/.local/libexec/konsole-session/konsole-load
 ExecStart=%h/.local/libexec/konsole-session/start-konsole-save-service
 
 [Install]
-# graphical-session.target is started/stopped from ~/.xinitrc while Xorg is still running
-# and DBUS_SESSION_BUS_ADDRESS, DISPLAY and XAUTHORITY are valid (to this user service).
-WantedBy=graphical-session.target
+# default.target is what is returned by `systemctl --user get-default`.
+# It has nothing to with the system-level target with the same name.
+WantedBy=default.target

@@ -25,13 +25,13 @@ echo
 
 # 3. Install Systemd Units (to user config)
 echo -n "Linking systemd units..."
-for unit in graphical-session.target konsole-session.service konsole-save@.service; do
+for unit in konsole-session.service konsole-save@.service; do
   echo -n " $unit"
   systemctl --user link "$PWD/$unit"
 done
 echo
 
-# 4. Enable konsole-session.service or it won't be started when graphical-session.target comes up.
+# 4. Enable konsole-session.service or it won't be started when (user) default.target comes up.
 echo "Enabling konsole-session.service..."
 systemctl --user enable konsole-session.service
 
@@ -40,4 +40,3 @@ echo "Reloading systemd user daemon..."
 systemctl --user daemon-reload
 
 echo "--- Done! ---"
-echo "Note: Ensure your ~/.xinitrc points to the new graphical-session.target"
